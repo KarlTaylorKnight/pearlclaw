@@ -1,0 +1,21 @@
+# Rust
+rust/target/
+eval-tools/target/
+
+# Zig
+zig/zig-out/
+zig/.zig-cache/
+
+# Bench raw outputs (committed baselines are explicit)
+benches/results/raw-*.json
+
+# Python venv used by extract_fixtures.py
+.venv/
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+*.swp
+.vscode/
+.idea/
