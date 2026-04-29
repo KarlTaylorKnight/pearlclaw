@@ -1,0 +1,5 @@
+Before text.
+<tool_call>
+{"name": "shell", "arguments": {"command": "echo hi"}}
+</tool_call>
+After text.

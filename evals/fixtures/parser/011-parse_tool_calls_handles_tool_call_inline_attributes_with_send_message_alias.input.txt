@@ -1,0 +1,1 @@
+<tool_call>send_message channel="user_channel" message="Hello! How can I assist you today?"</tool_call>

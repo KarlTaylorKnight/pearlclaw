@@ -1,0 +1,4 @@
+<tool_call>
+I will now call the tool with this payload:
+{"name": "shell", "arguments": {"command": "pwd"}}
+</tool_call>

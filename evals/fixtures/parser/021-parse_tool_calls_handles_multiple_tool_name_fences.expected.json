@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"content":"A","path":"/tmp/a.txt"},"name":"file_write","tool_call_id":null},{"arguments":{"path":"/tmp/a.txt"},"name":"file_read","tool_call_id":null}],"text":"First, I'll write a file.\nThen read it.\nDone."}

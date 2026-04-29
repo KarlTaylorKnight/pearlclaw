@@ -1,0 +1,4 @@
+<tool_call>
+not valid json
+</tool_call>
+Some text after.

@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"content":"Hello world","path":"/home/user/test.txt"},"name":"file_write","tool_call_id":null}],"text":"I'll write a test file.\nDone."}

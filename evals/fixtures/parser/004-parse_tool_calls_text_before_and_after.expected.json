@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"command":"echo hi"},"name":"shell","tool_call_id":null}],"text":"Before text.\nAfter text."}

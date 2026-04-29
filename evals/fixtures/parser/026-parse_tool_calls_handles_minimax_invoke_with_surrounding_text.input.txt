@@ -1,0 +1,8 @@
+Preface
+<minimax:tool_call>
+<invoke name='http_request'>
+<parameter name='url'>https://example.com</parameter>
+<parameter name='method'>GET</parameter>
+</invoke>
+</minimax:tool_call>
+Tail

@@ -1,0 +1,5 @@
+I'll check that.
+```tool_call
+{"name": "shell", "arguments": {"command": "pwd"}}
+```
+Done.

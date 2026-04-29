@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"path":"a.txt"},"name":"file_read","tool_call_id":null},{"arguments":{"path":"b.txt"},"name":"file_read","tool_call_id":null}],"text":""}

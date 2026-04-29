@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"command":"uptime -p"},"name":"shell","tool_call_id":null}],"text":"I will call the tool now."}

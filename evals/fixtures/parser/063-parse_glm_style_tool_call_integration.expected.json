@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"command":"curl -s 'https://example.com'"},"name":"shell","tool_call_id":null}],"text":"Checking...\n\nDone"}

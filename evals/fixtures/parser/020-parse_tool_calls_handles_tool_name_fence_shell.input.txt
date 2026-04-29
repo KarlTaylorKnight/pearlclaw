@@ -1,0 +1,3 @@
+```tool shell
+{"command": "ls -la"}
+```

@@ -1,0 +1,3 @@
+<invoke>
+{"name": "shell", "arguments": {"command": "uptime"}}
+</invoke>

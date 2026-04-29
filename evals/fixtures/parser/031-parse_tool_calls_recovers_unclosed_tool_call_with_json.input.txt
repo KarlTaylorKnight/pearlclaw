@@ -1,0 +1,3 @@
+I will call the tool now.
+<tool_call>
+{"name": "shell", "arguments": {"command": "uptime -p"}}

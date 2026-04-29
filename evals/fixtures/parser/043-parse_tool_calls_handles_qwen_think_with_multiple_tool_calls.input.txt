@@ -1,0 +1,7 @@
+<think>I need to check two things</think>
+<tool_call>
+{"name":"shell","arguments":{"command":"date"}}
+</tool_call>
+<tool_call>
+{"name":"shell","arguments":{"command":"pwd"}}
+</tool_call>

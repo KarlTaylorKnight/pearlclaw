@@ -1,0 +1,3 @@
+<toolcall>
+{"name": "shell", "arguments": {"command": "date"}}
+</toolcall>

@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"content":"print('ok')","path":"test.py"},"name":"file_write","tool_call_id":null}],"text":""}

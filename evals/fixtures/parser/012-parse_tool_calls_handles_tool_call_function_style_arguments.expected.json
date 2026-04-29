@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"channel":"general","message":"test"},"name":"message_send","tool_call_id":null}],"text":""}

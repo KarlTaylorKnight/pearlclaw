@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"command":"ls -la"},"name":"shell","tool_call_id":null}],"text":""}

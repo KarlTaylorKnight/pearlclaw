@@ -1,0 +1,5 @@
+<tool_call>
+```json
+{"name": "file_write", "arguments": {"path": "test.py", "content": "print('ok')"}}
+```
+</tool_call>

@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"command":"sqlite3 /tmp/test.db \".tables\""},"name":"shell","tool_call_id":null}],"text":""}

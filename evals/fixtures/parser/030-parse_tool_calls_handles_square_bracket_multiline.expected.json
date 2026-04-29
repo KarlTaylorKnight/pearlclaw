@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"description":"Read test file","path":"/tmp/test.txt"},"name":"file_read","tool_call_id":null}],"text":"[]"}

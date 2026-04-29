@@ -1,0 +1,1 @@
+[TOOL_CALL]{tool => "shell", args => {--command "echo hello"}}[/TOOL_CALL]

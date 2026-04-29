@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"channel":"user_channel","message":"Hello! How can I assist you today?"},"name":"message_send","tool_call_id":null}],"text":""}

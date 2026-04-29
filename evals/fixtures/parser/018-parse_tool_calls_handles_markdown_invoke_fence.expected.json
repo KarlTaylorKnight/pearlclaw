@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"command":"date"},"name":"shell","tool_call_id":null}],"text":"Checking.\nDone."}

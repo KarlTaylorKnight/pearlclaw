@@ -1,0 +1,5 @@
+Preface
+```tool-call
+{"name": "shell", "arguments": {"command": "date"}}
+</tool_call>
+Tail

@@ -1,0 +1,1 @@
+browser_open/url>javascript:alert(1)

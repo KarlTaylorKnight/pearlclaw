@@ -1,0 +1,5 @@
+<minimax:tool_call>
+<invoke name="shell">
+<parameter name="command">sqlite3 /tmp/test.db ".tables"</parameter>
+</invoke>
+</minimax:tool_call>

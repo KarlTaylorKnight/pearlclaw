@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"method":"GET","url":"https://example.com"},"name":"http_request","tool_call_id":null}],"text":"Preface\n\n\nTail"}

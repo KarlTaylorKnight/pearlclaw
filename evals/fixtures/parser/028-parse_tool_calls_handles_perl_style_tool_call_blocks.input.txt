@@ -1,0 +1,3 @@
+TOOL_CALL
+{tool => "shell", args => { --command "uname -a" }}}
+/TOOL_CALL

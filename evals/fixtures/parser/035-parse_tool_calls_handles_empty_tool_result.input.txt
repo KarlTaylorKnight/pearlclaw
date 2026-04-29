@@ -1,0 +1,5 @@
+I'll run that command.
+<tool_result name="shell">
+
+</tool_result>
+Done.

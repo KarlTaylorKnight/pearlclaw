@@ -1,0 +1,4 @@
+<think>I need to list files to understand the project</think>
+<tool_call>
+{"name":"shell","arguments":{"command":"ls"}}
+</tool_call>

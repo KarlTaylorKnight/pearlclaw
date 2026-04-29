@@ -1,0 +1,5 @@
+I'll write a test file.
+```tool file_write
+{"path": "/home/user/test.txt", "content": "Hello world"}
+```
+Done.

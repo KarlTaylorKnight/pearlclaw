@@ -1,0 +1,6 @@
+[TOOL_CALL]
+{tool => "file_read", args => {
+  --path "/tmp/test.txt"
+  --description "Read test file"
+}}
+[/TOOL_CALL]

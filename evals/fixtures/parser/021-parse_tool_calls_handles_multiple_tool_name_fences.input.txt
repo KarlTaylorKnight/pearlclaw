@@ -1,0 +1,9 @@
+First, I'll write a file.
+```tool file_write
+{"path": "/tmp/a.txt", "content": "A"}
+```
+Then read it.
+```tool file_read
+{"path": "/tmp/a.txt"}
+```
+Done.

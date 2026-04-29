@@ -1,0 +1,2 @@
+shell/command>ls
+browser_open/url>https://example.com

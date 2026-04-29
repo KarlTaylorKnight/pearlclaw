@@ -1,0 +1,7 @@
+I'll help you with that.
+
+<tool_call>
+{"name":"shell","arguments":{"command":"echo hello"}}
+</tool_call>
+
+Let me check the result.

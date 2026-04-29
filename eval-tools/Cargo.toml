@@ -1,0 +1,13 @@
+[package]
+name = "eval-tools"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "eval-parser"
+path = "src/bin/eval-parser.rs"
+
+[dependencies]
+zeroclaw-tool-call-parser = { path = "../rust/crates/zeroclaw-tool-call-parser" }
+serde_json = "1.0"
