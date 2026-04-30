@@ -1,0 +1,4 @@
+{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"first","arguments":"{\"x\":1}"}}]}
+<tool_call>
+{"name":"second","arguments":{"x":2}}
+</tool_call>

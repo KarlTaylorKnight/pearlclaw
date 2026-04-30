@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"x":1},"name":"evil","tool_call_id":null},{"arguments":{"x":2},"name":"actual","tool_call_id":null}],"text":"<tool_result>\nThe previous tool printed:\n</tool_result>"}

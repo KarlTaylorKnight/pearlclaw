@@ -1,0 +1,16 @@
+{
+  "lang":"rust",
+  "version":"rustc 1.95.0 (59807616e 2026-04-14)",
+  "host":{"os":"macOS-15.4","arch":"x86_64","cpu":"Intel(R) Xeon(R) W-2191B CPU @ 2.30GHz"},
+  "timestamp":"2026-04-30T06:38:25Z",
+  "build_profile":"release",
+  "benchmarks":[{"id":"xml_parse_single_tool_call","samples":100,"iterations_per_sample":null,"ns_per_op":{"mean":2699.891905392157,"median":2683.6626928440173,"stddev":70.83421380356681,"p99":null}}
+,{"id":"xml_parse_multi_tool_call","samples":100,"iterations_per_sample":null,"ns_per_op":{"mean":5669.136133568475,"median":5682.357361441686,"stddev":167.0127662801275,"p99":null}}
+,{"id":"native_parse_tool_calls","samples":100,"iterations_per_sample":null,"ns_per_op":{"mean":1457.0004411708994,"median":1423.843272011326,"stddev":85.77039357606824,"p99":null}}
+,{"id":"memory_store_single","samples":100,"iterations_per_sample":null,"ns_per_op":{"mean":171612.1372004062,"median":169767.1429835307,"stddev":19071.948046087724,"p99":null}}
+,{"id":"memory_recall_top10","samples":100,"iterations_per_sample":null,"ns_per_op":{"mean":296545.33232035156,"median":294809.8657407408,"stddev":10735.886215878165,"p99":null}}
+,{"id":"memory_count","samples":100,"iterations_per_sample":null,"ns_per_op":{"mean":19920.652039880177,"median":19693.37639423077,"stddev":1203.7352060929634,"p99":null}}
+,{"id":"agent_turn_text_only","samples":100,"iterations_per_sample":null,"ns_per_op":{"mean":59988.29090028792,"median":59620.82391513983,"stddev":2645.6398253082143,"p99":null}}
+,{"id":"agent_turn_with_tool_call","samples":100,"iterations_per_sample":null,"ns_per_op":{"mean":70059.30137597352,"median":69613.82770718452,"stddev":2558.5987605258715,"p99":null}}
+]
+}

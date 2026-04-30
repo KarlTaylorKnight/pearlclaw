@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"msg":"line1\nline2\twith\ttabs\nand \"quotes\" plus \\backslash\\"},"name":"echo","tool_call_id":null}],"text":""}

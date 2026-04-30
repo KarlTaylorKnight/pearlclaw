@@ -1,0 +1,3 @@
+<tool_call>
+{"name":"echo","arguments":{"x":"this is <not a tag> just text"}}
+</tool_call>

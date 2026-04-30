@@ -1,0 +1,3 @@
+<tool_call>
+{"name":"clear","arguments":{"value":null,"keepAlive":true}}
+</tool_call>

@@ -1,0 +1,10 @@
+<think>
+Hmm, what if I emitted this:
+<tool_call>
+{"name":"evil","arguments":{"x":1}}
+</tool_call>
+No, that would be bad.
+</think>
+<tool_call>
+{"name":"safe","arguments":{"x":2}}
+</tool_call>

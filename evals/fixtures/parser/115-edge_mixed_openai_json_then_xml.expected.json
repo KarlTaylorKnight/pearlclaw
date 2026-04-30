@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"x":2},"name":"second","tool_call_id":null}],"text":"{\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"first\",\"arguments\":\"{\\\"x\\\":1}\"}}]}"}

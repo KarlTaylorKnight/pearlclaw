@@ -1,0 +1,8 @@
+<tool_call>
+{
+	"name": "echo",
+	"arguments": {
+		"msg": "tabs"
+	}
+}
+</tool_call>

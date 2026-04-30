@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"msg":"after"},"name":"echo","tool_call_id":null}],"text":"```tool shell\n{\"command\":\"ls\"}\n```"}

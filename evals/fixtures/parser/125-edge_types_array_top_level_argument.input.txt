@@ -1,0 +1,3 @@
+<tool_call>
+{"name":"sum","arguments":[1,2,3,4,5]}
+</tool_call>

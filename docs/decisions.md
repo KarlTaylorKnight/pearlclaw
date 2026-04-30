@@ -150,3 +150,41 @@ parse, dispatch, free everything at end of turn).
 controls the allocator). Internal hot paths use arena allocators where
 short-lived allocations dominate.
 **Status:** tentative — finalize during parser port
+
+---
+
+## D11 — Channel scope: orchestrator + cli + utilities only for pilot
+
+**Date:** 2026-04-30
+**Decision:** Apply the same shrinking logic to `zeroclaw-channels` that D8
+applied to `zeroclaw-providers`, but preserve the feature-gate mechanism
+on the Zig side via `build.zig` build options.
+
+**In scope for the Zig pilot (always compiled):**
+- `orchestrator/` (479 KB / 12,248 lines — see correction below)
+- `util.rs`
+- `cli` channel
+- `link_enricher.rs`, `transcription.rs`, `tts.rs`
+
+**On-demand after pilot (port one at a time when actually needed, in this priority order):**
+- `discord` (91 KB) — most-requested for agent runtimes
+- `slack` (190 KB)
+- `telegram` (211 KB)
+
+**Drop initially (revisit only if user need surfaces):** nostr, bluesky, voice_call, voice_wake, whatsapp_web, whatsapp_storage, mochat, dingtalk, qq, wechat, wecom, lark, line, irc, imessage, mattermost, signal, notion, twitter, reddit, linq, wati, nextcloud_talk, email_channel, gmail_push, clawdtalk, webhook, acp_server.
+
+This drops ~26 channels totalling ~1.7 MB of source. The pilot Zig channels
+crate is roughly **600 KB in scope** vs the 2.4 MB Rust crate (~75% reduction).
+
+**Correction to plan:** the plan called `loop_.rs` (282 KB) "the actual
+project." That's wrong — `orchestrator/mod.rs` at 479 KB is significantly
+larger and equally load-bearing. Both warrant Codex first-pass per D9, with
+multi-pass refinement along function boundaries. Treat orchestrator port as
+its own multi-PR effort, scheduled at the same priority as `loop_.rs` (Week 11+ in the
+crate-ordering table).
+
+**Why:** Channels are already opt-in via Cargo features (unlike LLM
+providers which were always-compiled). The Zig port can mirror this via
+`build.zig` options; users enable channels they need. Keeps the pilot
+binary lean, defers heavy work that doesn't gate eval/bench parity.
+**Status:** accepted

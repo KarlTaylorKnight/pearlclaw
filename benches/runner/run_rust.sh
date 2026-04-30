@@ -17,12 +17,17 @@ if [[ ! -d "${CRITERION_ROOT}" ]]; then
 fi
 
 # In-scope benchmark IDs (mirrored on the Zig side).
+# Note: criterion split xml parsing into single/multi at some point; we keep
+# both. The Zig side will emit benchmarks with these exact IDs.
 PILOT_IDS=(
-  "xml_parse_tool_calls"
+  "xml_parse_single_tool_call"
+  "xml_parse_multi_tool_call"
   "native_parse_tool_calls"
   "memory_store_single"
   "memory_recall_top10"
   "memory_count"
+  "agent_turn_text_only"
+  "agent_turn_with_tool_call"
 )
 
 # Host metadata.

@@ -1,0 +1,3 @@
+<tool_call>
+{"name":"echo","arguments":{"msg":"prefix </tool_call> suffix"}}
+</tool_call>

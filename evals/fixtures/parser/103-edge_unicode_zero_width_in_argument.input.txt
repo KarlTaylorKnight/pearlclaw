@@ -1,0 +1,3 @@
+<tool_call>
+{"name":"echo","arguments":{"msg":"a​b‌c﻿d"}}
+</tool_call>

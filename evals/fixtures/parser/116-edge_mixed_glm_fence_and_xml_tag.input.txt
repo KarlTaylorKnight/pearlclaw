@@ -1,0 +1,6 @@
+```tool shell
+{"command":"ls"}
+```
+<tool_call>
+{"name":"echo","arguments":{"msg":"after"}}
+</tool_call>

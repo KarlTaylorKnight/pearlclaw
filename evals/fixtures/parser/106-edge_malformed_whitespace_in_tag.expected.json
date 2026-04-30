@@ -1,0 +1,1 @@
+{"calls":[],"text":"<tool_call    >\n   {\"name\":\"echo\",\"arguments\":{\"msg\":\"hi\"}}\n</tool_call   >"}

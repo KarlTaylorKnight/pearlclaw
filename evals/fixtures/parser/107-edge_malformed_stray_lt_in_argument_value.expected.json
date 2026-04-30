@@ -1,0 +1,1 @@
+{"calls":[{"arguments":{"x":"this is <not a tag> just text"},"name":"echo","tool_call_id":null}],"text":""}
