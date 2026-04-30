@@ -1,13 +1,25 @@
-//! By convention, root.zig is the root source file when making a library. If
-//! you are making an executable, the convention is to delete this file and
-//! start with main.zig instead.
+//! Zeroclaw — Zig port (pilot scope: parser + memory subset + dispatcher).
+//!
+//! This is the public root module. Each pilot subsystem lives under its
+//! own subdirectory and is re-exported here; downstream binaries
+//! (`eval-parser`, `eval-memory`, `eval-dispatcher`, `agent-benchmarks`)
+//! import this module via `@import("zeroclaw")`.
+//!
+//! Out of scope for the pilot:
+//!   - Async runtime (libxev) — enters at full memory port (D7).
+//!   - LLM providers — Ollama + OpenAI only, post-pilot (D8).
+//!   - Channels — orchestrator + cli only, post-pilot (D11).
+
 const std = @import("std");
-const testing = std.testing;
 
-pub export fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
+pub const tool_call_parser = @import("tool_call_parser/root.zig");
 
-test "basic add functionality" {
-    try testing.expect(add(3, 7) == 10);
+// Re-exports for ergonomics. Stable surface that the pilot will hold to.
+// Real types land here as each module's port reaches green.
+//
+// pub const ParsedToolCall = tool_call_parser.ParsedToolCall;
+// pub const parseToolCalls = tool_call_parser.parseToolCalls;
+
+test {
+    std.testing.refAllDecls(@This());
 }

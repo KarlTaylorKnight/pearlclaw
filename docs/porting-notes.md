@@ -81,3 +81,22 @@ Recommendation: option 1 for the pilot (just ship parity). Revisit after Week 3 
 - Pilot channel scope: orchestrator + cli + util/link_enricher/transcription/tts only. Discord/Slack/Telegram in priority queue post-pilot. ~26 channels dropped initially.
 - The `Channel` trait and `start_channels()` live in `orchestrator/mod.rs`. Internal-heavy file (only 1 top-level pub fn — `conversation_history_key`) so its surface is well-encapsulated; that's good news for porting since most of the contents will be private impls of the trait.
 - Pilot budget for channels: defer entirely until Week 5+ per the post-pilot crate ordering. Pilot only needs CLI for end-to-end agent demo, and CLI doesn't depend on the orchestrator (it's always-compiled).
+
+---
+
+## 2026-05-01 — Week 2 Day 1: parser scaffolding + mvzr wired
+
+- **mvzr 0.3.9 fetched** (`zig fetch --save`). Note: upstream default branch is `trunk`, not `main` — the plan and earlier instructions were wrong about the URL. Pinned hash recorded in `zig/build.zig.zon`. `libxev` still deferred per D7.
+- **build.zig** wires `mvzr` into the core `zeroclaw_mod` so any file under `zig/src/` can `@import("mvzr")`.
+- **zig/src/root.zig** replaced — was the default `add(a,b)` template from `zig init`. Now re-exports `tool_call_parser`. Other pilot subsystem re-exports land as their ports reach green.
+- **Build verified:** `zig build`, `zig build test`, eval-parser stub roundtrip, eval driver end-to-end (79 of 86 fixtures diverge as expected — the 7 passing are inputs whose Rust output is itself empty, so the empty-stub matches).
+- **Parser outline pinned:** `docs/parser-pilot/rust-outline.txt` captures every top-level `pub fn`/`fn`/`struct` in the 2,773-line monolith with line numbers. Confirms the planned module split:
+  - `types.zig` (line 16): `ParsedToolCall`
+  - `json.zig` (lines 22-141): `parse_arguments_value`, `parse_tool_call_id`, `parse_tool_call_value`, `parse_tool_calls_from_json_value`, `extract_first_json_value_with_end`, `extract_json_values`, `find_json_end`, `canonicalize_json_for_tool_signature`
+  - `xml.zig` (lines 144-261, 511-571): `is_xml_meta_tag`, `extract_xml_pairs`, `parse_xml_tool_calls`, `parse_xml_attribute_tool_calls`, `find_first_tag`, `strip_leading_close_tags`
+  - `minimax.zig` (lines 263-376): `parse_minimax_invoke_calls`
+  - `perl.zig` (lines 572-697): `parse_perl_style_tool_calls`, `parse_function_call_tool_calls`
+  - `glm.zig` (lines 698-993): `map_tool_name_alias`, `build_curl_command`, `parse_glm_style_tool_calls`, `default_param_for_tool`, `parse_glm_shortened_body`
+  - `cleanup.zig` (lines 1390-1431): `strip_think_tags`, `strip_tool_result_blocks`
+  - `entry.zig` (lines 995-1505): `parse_tool_calls`, `detect_tool_call_parse_issue`, `build_native_assistant_history_from_parsed_calls`
+- **Of 2,773 total lines, ~1,505 are parser code and ~1,267 are tests.** The "99 KB monolith" is closer to ~50 KB of actual implementation once the test block is subtracted; still over the 50 KB / 800 LOC threshold for Codex first-pass per D9.

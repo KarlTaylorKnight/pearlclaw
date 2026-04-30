@@ -1,0 +1,29 @@
+16:pub struct ParsedToolCall {
+22:fn parse_arguments_value(raw: Option<&serde_json::Value>) -> serde_json::Value {
+31:fn parse_tool_call_id(
+46:pub fn canonicalize_json_for_tool_signature(value: &serde_json::Value) -> serde_json::Value {
+69:fn parse_tool_call_value(value: &serde_json::Value) -> Option<ParsedToolCall> {
+113:fn parse_tool_calls_from_json_value(value: &serde_json::Value) -> Vec<ParsedToolCall> {
+144:fn is_xml_meta_tag(tag: &str) -> bool {
+180:fn extract_xml_pairs(input: &str) -> Vec<(&str, &str)> {
+204:fn parse_xml_tool_calls(xml_content: &str) -> Option<Vec<ParsedToolCall>> {
+263:fn parse_minimax_invoke_calls(response: &str) -> Option<(String, Vec<ParsedToolCall>)> {
+377:fn find_first_tag<'a>(haystack: &str, tags: &'a [&'a str]) -> Option<(usize, &'a str)> {
+383:fn extract_first_json_value_with_end(input: &str) -> Option<(serde_json::Value, usize)> {
+405:fn strip_leading_close_tags(mut input: &str) -> &str {
+428:fn extract_json_values(input: &str) -> Vec<serde_json::Value> {
+467:fn find_json_end(input: &str) -> Option<usize> {
+511:fn parse_xml_attribute_tool_calls(response: &str) -> Vec<ParsedToolCall> {
+572:fn parse_perl_style_tool_calls(response: &str) -> Vec<ParsedToolCall> {
+651:fn parse_function_call_tool_calls(response: &str) -> Vec<ParsedToolCall> {
+698:fn map_tool_name_alias(tool_name: &str) -> &str {
+719:fn build_curl_command(url: &str) -> Option<String> {
+732:fn parse_glm_style_tool_calls(text: &str) -> Vec<(String, serde_json::Value, Option<String>)> {
+798:fn default_param_for_tool(tool: &str) -> &'static str {
+827:fn parse_glm_shortened_body(body: &str) -> Option<ParsedToolCall> {
+995:pub fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
+1390:pub fn strip_think_tags(s: &str) -> String {
+1412:pub fn strip_tool_result_blocks(text: &str) -> String {
+1433:pub fn detect_tool_call_parse_issue(
+1469:pub fn build_native_assistant_history_from_parsed_calls(
+1506:#[cfg(test)]

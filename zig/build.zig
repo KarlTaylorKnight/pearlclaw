@@ -4,12 +4,17 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Third-party deps. mvzr (pure-Zig regex) per D4. libxev deferred per D7.
+    const mvzr_dep = b.dependency("mvzr", .{ .target = target, .optimize = optimize });
+    const mvzr_mod = mvzr_dep.module("mvzr");
+
     // Core library module — re-exports parser/memory/dispatcher/providers.
     const zeroclaw_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    zeroclaw_mod.addImport("mvzr", mvzr_mod);
 
     const lib = b.addLibrary(.{
         .linkage = .static,
