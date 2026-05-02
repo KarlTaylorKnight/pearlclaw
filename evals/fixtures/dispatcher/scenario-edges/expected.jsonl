@@ -1,0 +1,6 @@
+{"op":"parse_response","result":{"calls":[],"text":""}}
+{"op":"parse_response","result":{"calls":[],"text":""}}
+{"op":"parse_response","result":{"calls":[],"text":"prefix"}}
+{"op":"parse_response","result":{"calls":[],"text":"prefix\nprefix\n<tool_call>{\"name\":\"a\",\"arguments\":{}}\nnever closes"}}
+{"op":"parse_response","result":{"calls":[{"arguments":{},"name":"a","tool_call_id":null}],"text":""}}
+{"op":"parse_response","result":{"calls":[],"text":"only text, no calls here"}}

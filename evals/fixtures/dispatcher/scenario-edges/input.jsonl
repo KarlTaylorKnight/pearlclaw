@@ -1,0 +1,6 @@
+{"op":"parse_response","dispatcher":"xml","response":{"text":"<tool_call>{\"name\":\"\",\"arguments\":{}}</tool_call>","tool_calls":[]}}
+{"op":"parse_response","dispatcher":"xml","response":{"text":"<tool_call>this is not json at all</tool_call>","tool_calls":[]}}
+{"op":"parse_response","dispatcher":"xml","response":{"text":"prefix <think>unclosed thinking that never ends","tool_calls":[]}}
+{"op":"parse_response","dispatcher":"xml","response":{"text":"prefix\n<tool_call>{\"name\":\"a\",\"arguments\":{}}\nnever closes","tool_calls":[]}}
+{"op":"parse_response","dispatcher":"xml","response":{"text":"<tool_call>{\"name\":\"a\"}</tool_call>","tool_calls":[]}}
+{"op":"parse_response","dispatcher":"xml","response":{"text":"only text, no calls here","tool_calls":[]}}

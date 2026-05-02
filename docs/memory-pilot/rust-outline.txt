@@ -1,0 +1,256 @@
+# memory pilot — Rust outline
+# Source: rust/crates/zeroclaw-memory/src/ (in-scope files only per plan §'Pilot port: memory')
+# Generated: 2026-04-30
+
+## lib.rs
+77:fn build_postgres_memory(
+98:fn build_postgres_memory(
+108:fn create_memory_with_builders<F>(
+147:pub fn effective_memory_backend_name(
+163:pub fn is_assistant_autosave_key(key: &str) -> bool {
+172:pub fn is_user_autosave_key(key: &str) -> bool {
+179:pub fn should_skip_autosave_content(content: &str) -> bool {
+194:struct ResolvedEmbeddingConfig {
+201:impl std::fmt::Debug for ResolvedEmbeddingConfig {
+202:    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+214:fn embedding_provider_env_key(provider: &str) -> Option<String> {
+227:fn resolve_embedding_config(
+295:pub fn create_memory(
+304:pub fn create_memory_with_storage(
+314:pub fn create_memory_with_storage_and_routes(
+364:    fn build_sqlite_memory(
+445:pub fn create_memory_for_migration(
+464:pub fn create_response_cache(config: &MemoryConfig, workspace_dir: &Path) -> Option<ResponseCache> {
+496:    fn factory_sqlite() {
+507:    fn assistant_autosave_key_detection_matches_legacy_patterns() {
+516:    fn user_autosave_key_detection_matches_per_turn_patterns() {
+525:    fn autosave_content_filter_drops_cron_and_distilled_noise() {
+545:    fn factory_markdown() {
+556:    fn factory_lucid() {
+567:    fn factory_none_uses_noop_memory() {
+579:    fn factory_postgres_without_feature_gives_clear_error() {
+595:    fn factory_unknown_falls_back_to_markdown() {
+606:    fn migration_factory_lucid() {
+613:    fn migration_factory_none_is_rejected() {
+622:    fn effective_backend_name_prefers_storage_override() {
+635:    fn resolve_embedding_config_uses_base_config_when_model_is_not_hint() {
+656:    fn resolve_embedding_config_uses_matching_route_with_api_key_override() {
+684:    fn resolve_embedding_config_falls_back_when_hint_is_missing() {
+705:    fn resolve_embedding_config_falls_back_when_route_is_invalid() {
+740:    fn resolve_embedding_config_uses_embedding_provider_env_key_not_default_provider_key() {
+
+## sqlite.rs
+29:pub struct SqliteMemory {
+40:impl SqliteMemory {
+41:    pub fn new(workspace_dir: &Path) -> anyhow::Result<Self> {
+54:    pub fn new_named(workspace_dir: &Path, db_name: &str) -> anyhow::Result<Self> {
+84:    pub fn with_embedder(
+129:    fn open_connection(
+160:    fn init_schema(conn: &Connection) -> anyhow::Result<()> {
+239:    fn category_to_str(cat: &MemoryCategory) -> String {
+248:    fn str_to_category(s: &str) -> MemoryCategory {
+260:    fn content_hash(text: &str) -> String {
+275:    pub fn connection(&self) -> &Arc<Mutex<Connection>> {
+280:    pub async fn get_or_compute_embedding(&self, text: &str) -> anyhow::Result<Option<Vec<f32>>> {
+343:    pub fn fts5_search(
+389:    pub fn vector_search(
+436:    pub async fn reindex(&self) -> anyhow::Result<usize> {
+488:    async fn recall_by_time_only(
+560:impl Memory for SqliteMemory {
+561:    fn name(&self) -> &str {
+565:    async fn store(
+605:    async fn recall(
+839:    async fn get(&self, key: &str) -> anyhow::Result<Option<MemoryEntry>> {
+872:    async fn list(
+939:    async fn forget(&self, key: &str) -> anyhow::Result<bool> {
+951:    async fn purge_namespace(&self, namespace: &str) -> anyhow::Result<usize> {
+967:    async fn purge_session(&self, session_id: &str) -> anyhow::Result<usize> {
+983:    async fn count(&self) -> anyhow::Result<usize> {
+996:    async fn health_check(&self) -> bool {
+1003:    async fn export(&self, filter: &ExportFilter) -> anyhow::Result<Vec<MemoryEntry>> {
+1070:    async fn recall_namespaced(
+1090:    async fn store_with_metadata(
+1141:    fn temp_sqlite() -> (TempDir, SqliteMemory) {
+1148:    async fn sqlite_name() {
+1154:    async fn sqlite_health() {
+1160:    async fn sqlite_store_and_get() {
+1175:    async fn sqlite_store_upsert() {
+1190:    async fn sqlite_recall_keyword() {
+1217:    async fn sqlite_recall_multi_keyword() {
+1233:    async fn sqlite_recall_no_match() {
+1246:    async fn sqlite_forget() {
+1259:    async fn sqlite_forget_nonexistent() {
+1266:    async fn sqlite_list_all() {
+1283:    async fn sqlite_list_by_category() {
+1303:    async fn sqlite_count_empty() {
+1309:    async fn sqlite_get_nonexistent() {
+1315:    async fn sqlite_db_persists() {
+1333:    async fn sqlite_category_roundtrip() {
+1357:    async fn fts5_bm25_ranking() {
+1397:    async fn fts5_multi_word_query() {
+1416:    async fn recall_empty_query_returns_recent_entries() {
+1428:    async fn recall_whitespace_query_returns_recent_entries() {
+1442:    fn content_hash_deterministic() {
+1449:    fn content_hash_different_inputs() {
+1458:    async fn schema_has_fts5_table() {
+1473:    async fn schema_has_embedding_cache() {
+1487:    async fn schema_memories_has_embedding_column() {
+1498:    async fn fts5_syncs_on_insert() {
+1521:    async fn fts5_syncs_on_delete() {
+1545:    async fn fts5_syncs_on_update() {
+1584:    fn open_with_timeout_succeeds_when_fast() {
+1604:    async fn open_with_timeout_store_recall_unchanged() {
+1631:    fn with_embedder_noop() {
+1650:    async fn reindex_rebuilds_fts() {
+1671:    async fn recall_respects_limit() {
+1694:    async fn recall_results_have_scores() {
+1710:    async fn recall_with_quotes_in_query() {
+1722:    async fn recall_with_asterisk_in_query() {
+1732:    async fn recall_with_parentheses_in_query() {
+1745:    async fn recall_with_sql_injection_attempt() {
+1763:    async fn store_empty_content() {
+1773:    async fn store_empty_key() {
+1783:    async fn store_very_long_content() {
+1794:    async fn store_unicode_and_emoji() {
+1809:    async fn store_content_with_newlines_and_tabs() {
+1822:    async fn recall_single_character_query() {
+1834:    async fn recall_limit_zero() {
+1844:    async fn recall_limit_one() {
+1860:    async fn recall_matches_by_key_not_just_content() {
+1876:    async fn recall_unicode_query() {
+1888:    async fn schema_idempotent_reopen() {
+1909:    async fn schema_triple_open() {
+1920:    async fn forget_then_recall_no_ghost_results() {
+1942:    async fn forget_and_re_store_same_key() {
+1959:    async fn reindex_empty_db() {
+1966:    async fn reindex_twice_is_safe() {
+1982:    fn content_hash_empty_string() {
+1989:    fn content_hash_unicode() {
+1998:    fn content_hash_long_input() {
+2007:    fn category_roundtrip_custom_with_spaces() {
+2016:    fn category_roundtrip_empty_custom() {
+2027:    async fn list_custom_category() {
+2057:    async fn list_empty_db() {
+2066:    async fn sqlite_purge_namespace_removes_all_matching_entries() {
+2084:    async fn sqlite_purge_namespace_preserves_other_namespaces() {
+2112:    async fn sqlite_purge_namespace_returns_count() {
+2130:    async fn sqlite_purge_session_removes_all_matching_entries() {
+2148:    async fn sqlite_purge_session_preserves_other_sessions() {
+2173:    async fn sqlite_purge_session_returns_count() {
+2191:    async fn sqlite_purge_namespace_empty_namespace_is_noop() {
+2203:    async fn sqlite_purge_session_empty_session_is_noop() {
+2217:    async fn store_and_recall_with_session_id() {
+2240:    async fn recall_no_session_filter_returns_all() {
+2258:    async fn cross_session_recall_isolation() {
+2285:    async fn list_with_session_filter() {
+2319:    async fn schema_migration_idempotent_on_reopen() {
+2346:    async fn sqlite_concurrent_writes_no_data_loss() {
+2377:    async fn sqlite_concurrent_read_write_no_panic() {
+2422:    async fn export_no_filter_returns_all_entries() {
+2440:    async fn export_with_namespace_filter() {
+2473:    async fn export_with_session_id_filter() {
+2492:    async fn export_with_category_filter() {
+2511:    async fn export_with_time_range() {
+2540:    async fn export_with_combined_filters() {
+2586:    async fn export_empty_database_returns_empty_vec() {
+2594:    async fn export_ordering_is_chronological() {
+2615:    async fn export_preserves_field_integrity() {
+2643:    async fn sqlite_reindex_preserves_data() {
+2663:    async fn sqlite_reindex_idempotent() {
+2680:    async fn search_mode_bm25_only() {
+2713:    async fn search_mode_embedding_only() {
+2746:    async fn search_mode_hybrid_default() {
+
+## backend.rs
+2:pub enum MemoryBackendKind {
+14:pub struct MemoryBackendProfile {
+94:pub fn selectable_memory_backends() -> &'static [MemoryBackendProfile] {
+98:pub fn default_memory_backend_key() -> &'static str {
+102:pub fn classify_memory_backend(backend: &str) -> MemoryBackendKind {
+114:pub fn memory_backend_profile(backend: &str) -> MemoryBackendProfile {
+131:    fn classify_known_backends() {
+146:    fn classify_unknown_backend() {
+151:    fn selectable_backends_are_ordered_for_onboarding() {
+162:    fn postgres_profile_is_optional_non_sqlite_backend() {
+171:    fn lucid_profile_is_sqlite_based_optional_backend() {
+179:    fn unknown_profile_preserves_extensibility_defaults() {
+
+## policy.rs
+11:pub struct PolicyEnforcer {
+15:impl PolicyEnforcer {
+16:    pub fn new(config: &MemoryPolicyConfig) -> Self {
+23:    pub fn is_read_only(&self, namespace: &str) -> bool {
+31:    pub fn validate_store(
+43:    pub fn check_namespace_limit(&self, current_count: usize) -> Result<(), PolicyViolation> {
+56:    pub fn check_category_limit(&self, current_count: usize) -> Result<(), PolicyViolation> {
+70:    pub fn retention_days_for_category(&self, category: &MemoryCategory, default_days: u32) -> u32 {
+82:pub enum PolicyViolation {
+88:impl std::fmt::Display for PolicyViolation {
+89:    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+102:impl std::error::Error for PolicyViolation {}
+109:    fn empty_policy() -> MemoryPolicyConfig {
+114:    fn default_policy_allows_everything() {
+127:    fn read_only_namespace_blocks_writes() {
+149:    fn namespace_quota_enforced() {
+162:    fn category_quota_enforced() {
+174:    fn per_category_retention_overrides_default() {
+
+## audit.rs
+17:pub enum AuditOp {
+26:impl std::fmt::Display for AuditOp {
+27:    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+40:pub struct AuditedMemory<M: Memory> {
+48:    pub fn new(inner: M, workspace_dir: &Path) -> anyhow::Result<Self> {
+78:    fn log_audit(
+97:    pub fn prune_older_than(&self, retention_days: u32) -> anyhow::Result<u64> {
+109:    pub fn audit_count(&self) -> anyhow::Result<usize> {
+120:    fn name(&self) -> &str {
+124:    async fn store(
+135:    async fn recall(
+155:    async fn get(&self, key: &str) -> anyhow::Result<Option<MemoryEntry>> {
+160:    async fn list(
+169:    async fn forget(&self, key: &str) -> anyhow::Result<bool> {
+174:    async fn count(&self) -> anyhow::Result<usize> {
+178:    async fn health_check(&self) -> bool {
+182:    async fn store_procedural(
+197:    async fn recall_namespaced(
+218:    async fn store_with_metadata(
+241:    async fn audited_memory_logs_store_operation() {
+255:    async fn audited_memory_logs_recall_operation() {
+266:    async fn audited_memory_prune_works() {
+284:    async fn audited_memory_delegates_correctly() {
+
+## traits.rs
+
+## ../zeroclaw-api/src/memory_traits.rs (canonical Memory trait — re-exported by traits.rs)
+6:pub struct ExportFilter {
+21:pub struct ProceduralMessage {
+30:pub struct MemoryEntry {
+49:fn default_namespace() -> String {
+53:impl std::fmt::Debug for MemoryEntry {
+54:    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+70:pub enum MemoryCategory {
+81:impl serde::Serialize for MemoryCategory {
+82:    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+88:    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+99:impl std::fmt::Display for MemoryCategory {
+100:    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+112:pub trait Memory: Send + Sync {
+114:    fn name(&self) -> &str;
+117:    async fn store(
+128:    async fn recall(
+138:    async fn get(&self, key: &str) -> anyhow::Result<Option<MemoryEntry>>;
+141:    async fn list(
+148:    async fn forget(&self, key: &str) -> anyhow::Result<bool>;
+153:    async fn purge_namespace(&self, _namespace: &str) -> anyhow::Result<usize> {
+160:    async fn purge_session(&self, _session_id: &str) -> anyhow::Result<usize> {
+165:    async fn count(&self) -> anyhow::Result<usize>;
+168:    async fn health_check(&self) -> bool;
+175:    async fn store_procedural(
+187:    async fn recall_namespaced(
+215:    async fn export(&self, filter: &ExportFilter) -> anyhow::Result<Vec<MemoryEntry>> {
+247:    async fn store_with_metadata(
+265:    fn memory_category_display_outputs_expected_values() {
+276:    fn memory_category_serde_uses_snake_case() {
+287:    fn memory_category_custom_roundtrip() {
+296:    fn memory_entry_roundtrip_preserves_optional_fields() {

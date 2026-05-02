@@ -1,0 +1,6 @@
+{"op":"parse_response","result":{"calls":[{"arguments":{"path":"a.txt"},"name":"file_read","tool_call_id":"tc1"}],"text":"ok"}}
+{"op":"parse_response","result":{"calls":[{"arguments":{"command":"ls","timeout":30},"name":"shell","tool_call_id":"tc2"},{"arguments":{"content":"done","path":"out.log"},"name":"file_write","tool_call_id":"tc3"}],"text":"running"}}
+{"op":"parse_response","result":{"calls":[{"arguments":{},"name":"broken","tool_call_id":"tc4"}],"text":""}}
+{"op":"format_results","result":{"data":[{"content":"hello world","tool_call_id":"tc-1"}],"type":"ToolResults"}}
+{"op":"format_results","result":{"data":[{"content":"oops","tool_call_id":"unknown"}],"type":"ToolResults"}}
+{"op":"should_send_tool_specs","result":true}

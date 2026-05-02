@@ -188,3 +188,166 @@ providers which were always-compiled). The Zig port can mirror this via
 `build.zig` options; users enable channels they need. Keeps the pilot
 binary lean, defers heavy work that doesn't gate eval/bench parity.
 **Status:** accepted
+
+---
+
+## D12 — Memory determinism: normalize timestamps + UUIDs in the eval driver, defer trait refactor
+
+**Date:** 2026-04-30
+**Decision:** The Rust `Memory` trait impls hardcode `chrono::Local::now().to_rfc3339()`
+and `Uuid::new_v4()` inside `store`/`store_with_metadata` (sqlite.rs:286,
+585, 587, 1113, 1115; audit.rs:87, 100). For pilot fixture parity, the
+eval driver normalizes these incidental fields **after** capturing both
+sides' output, before byte-diff:
+
+- `id` field: replace any UUID v4 (`/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/`) → `"<UUID>"`.
+- Any `*_at` / `timestamp` field at any nesting level: replace any RFC3339 string → `"<TS>"`.
+- Order of array elements is preserved (recall ranking is the actual signal under test).
+
+The cleaner trait refactor (`Clock + IdGen` injected at construction) is
+deferred — it would touch `zeroclaw-api`, every `Memory` impl, every
+constructor, and the pilot doesn't need it.
+
+**Why:** R9 mitigation in the plan said "refactor Rust ... before
+porting if it doesn't already" but didn't specify cost. The trait
+refactor is a multi-crate change to the *reference* implementation,
+which violates D1's "Rust is reference, port doesn't change it" spirit.
+Normalization in the eval driver achieves the same parity goal with no
+upstream churn.
+
+**Tradeoff:** Eval driver carries memory-specific normalization logic
+that the parser eval driver does not. Acceptable — memory is the only
+pilot subsystem with a wall-clock dependency.
+
+**Implication for `Memory.export()` ordering:** the trait says "Returns
+entries ordered by creation time (ascending)." With normalized
+timestamps that ordering is **only verifiable structurally** (insertion
+order via id sort or row order), not by comparing timestamp strings.
+Eval-memory captures `created_at` *before* normalization for the
+ordering assertion, then strips it for the diff.
+
+**Status:** accepted
+
+---
+
+## D13 — Memory schema versioning: introspection migrations, not `PRAGMA user_version`
+
+**Date:** 2026-04-30
+**Decision:** The Zig SQLite memory port matches the Rust pattern:
+schema migrations are guarded by `sqlite_master` SQL introspection (e.g.
+`SELECT sql FROM sqlite_master WHERE name='memories'` then
+`!schema_sql.contains("session_id")` → `ALTER TABLE`). Do not introduce
+`PRAGMA user_version`.
+
+**Erratum to plan:** Plan §"Pilot port: memory" said "PRAGMA
+`user_version` numbers preserved so Zig and Rust can read each other's
+databases." That was wrong — the Rust crate has no `user_version`
+anywhere. The reference pattern is column-introspection migrations
+(sqlite.rs:206-234, four ALTER blocks for `session_id`, `namespace`,
+`importance`, `superseded_by`).
+
+**Why:** Matching the reference exactly is the cheapest path to
+cross-readable databases. Introducing `user_version` only on the Zig
+side would mean Rust-written DBs open by Zig at user_version=0,
+triggering a no-op re-migration that's cosmetic noise. Introducing it
+on both sides means changing the Rust reference (violates D1).
+
+**Tradeoff:** introspection-driven migrations don't scale beyond ~10
+columns before the cumulative `IF NOT EXISTS` checks become a smell.
+The Rust crate is already at 4 ALTERs; if it gets to 10+, both sides
+should adopt `user_version` together. Tracked as a future revisit, not
+a pilot blocker.
+
+**Status:** accepted
+
+---
+
+## D14 — SQLite version: vendor amalgamation in Zig, drop "bundled" from rusqlite
+
+**Date:** 2026-04-30
+**Decision:** Pin a single SQLite C source for both sides:
+
+1. Vendor `sqlite-amalgamation-VERSION/sqlite3.{c,h}` under
+   `zig/vendor/sqlite3/`. Build it as a static library in `build.zig`
+   with `linkLibC()`.
+2. Modify `rust/crates/zeroclaw-memory/Cargo.toml`:
+   `rusqlite = { version = "0.37", features = [] }` (drop "bundled"),
+   then add `[dependencies] libsqlite3-sys = { version = "0.30", features = ["bundled"] }`
+   pointing at the same amalgamation version.
+
+Both sides use the **same pinned SQLite C source**. The exact version
+gets recorded in `zig/vendor/sqlite3/VERSION` and a matching pin appears
+in `Cargo.lock`.
+
+This **supersedes the relevant clause of D6** ("link `linkSystemLibrary("sqlite3")`").
+D6 stays in effect for the *interface* (direct `@cImport`, no Zig
+wrapper crate) — only the linking strategy changes.
+
+**Why:** macOS system sqlite on the dev host is 3.43.2; rusqlite's
+"bundled" feature ships ~3.46+. FTS5 BM25 ranking and tokenizer
+behavior can differ between versions enough to break byte-equal recall
+ordering. Pinning eliminates this as a parity risk and removes a
+host-environment dependency from CI.
+
+**Tradeoff:** ~9 MB of vendored C source in the repo (single file,
+amalgamated, doesn't churn). Build time goes up by a few seconds for
+first-build warm cache misses. Worth it for parity guarantees.
+
+**Acceptance check:** record `sqlite_version()` in both Rust and Zig
+bench output JSON; CI fails if they don't match.
+
+**Status:** accepted, supersedes D6 linking clause
+
+---
+
+## D15 — Audit decorator (`audit.rs`) deferred from pilot scope
+
+**Date:** 2026-04-30
+**Decision:** The pilot Zig memory port does not include `AuditedMemory`
+(rust/crates/zeroclaw-memory/src/audit.rs, 293 lines). It will be ported
+post-pilot when audit becomes load-bearing for compliance work.
+
+**Why:** Audit is a decorator pattern wrapping any `Memory` impl,
+writes to a separate `audit.db`, and is not exercised by the three
+criterion bench IDs the pilot must hit (`memory_store_single`,
+`memory_recall_top10`, `memory_count`). Porting it now is ~9 KB of work
+that doesn't move the acceptance gates.
+
+**Implication:** `eval-memory` operates against an unaudited
+`SqliteMemory` directly. When audit ports later, add a scenario op
+`{"op":"open_audited","path":"...","audit_path":"..."}` and an
+`audit_count` op to the eval contract; existing scenarios continue to
+work.
+
+**Status:** accepted
+
+---
+
+## D16 — Memory pilot calls `SqliteMemory.new` directly; no factory port
+
+**Date:** 2026-04-30
+**Decision:** The pilot does not port the `create_memory` /
+`create_memory_with_storage` / `create_memory_with_storage_and_routes`
+factory tree from `lib.rs:295-463`. Eval and bench binaries on both
+sides instantiate `SqliteMemory` directly via its constructor.
+
+**Why:** The factory exists to dispatch on a backend-name string
+(`"sqlite"`, `"postgres"`, `"markdown"`, `"lucid"`, `"none"`); the pilot
+only has SQLite. Porting the factory means also porting (or stubbing)
+`backend.rs` plus the `resolve_embedding_config` provider-routing
+machinery — neither of which is exercised by the bench IDs.
+
+**Implication:**
+- `backend.rs` (185 lines, F9) deferred along with the factory.
+- `lib.rs` port reduces to the four pure helpers used elsewhere:
+  `is_assistant_autosave_key`, `is_user_autosave_key`,
+  `should_skip_autosave_content`, and possibly nothing else for the
+  pilot. Move these to `zig/src/memory/autosave.zig` if needed; skip
+  entirely if no caller in pilot scope references them.
+
+When the runtime port begins (Week 11+) and needs the factory for
+config-driven backend selection, port it then with all the postgres /
+markdown / lucid backend stubs returning "not yet ported" errors, same
+shape as `purge_namespace`'s default.
+
+**Status:** accepted

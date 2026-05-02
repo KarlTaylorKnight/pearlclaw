@@ -1,0 +1,8 @@
+{"op":"health","result":true}
+{"op":"count","result":0}
+{"op":"count","result":2}
+{"op":"get","result":{"category":"core","content":"zeroclaw agent runtime uses tool dispatch","id":"<UUID>","importance":0.5,"key":"agent_fact","namespace":"default","score":null,"session_id":null,"superseded_by":null,"timestamp":"<TS>"}}
+{"op":"recall","result":[{"category":"core","content":"zeroclaw agent runtime uses tool dispatch","id":"<UUID>","importance":0.5,"key":"agent_fact","namespace":"default","score":2.323144599358784e-06,"session_id":null,"superseded_by":null,"timestamp":"<TS>"}]}
+{"op":"list","result":[{"category":"daily","content":"daily note about sqlite memory","id":"<UUID>","importance":0.5,"key":"daily_note","namespace":"default","score":null,"session_id":"s1","superseded_by":null,"timestamp":"<TS>"},{"category":"core","content":"zeroclaw agent runtime uses tool dispatch","id":"<UUID>","importance":0.5,"key":"agent_fact","namespace":"default","score":null,"session_id":null,"superseded_by":null,"timestamp":"<TS>"}]}
+{"op":"forget","result":true}
+{"op":"count","result":1}

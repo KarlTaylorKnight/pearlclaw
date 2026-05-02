@@ -1,0 +1,6 @@
+{"op":"parse_response","dispatcher":"xml","response":{"text":"Checking\n<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>","tool_calls":[]}}
+{"op":"parse_response","dispatcher":"xml","response":{"text":"<think>I should list files first</think>\nLet me run that.\n<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls -la\"}}</tool_call>","tool_calls":[]}}
+{"op":"parse_response","dispatcher":"xml","response":{"text":"first\n<tool_call>{\"name\":\"a\",\"arguments\":{}}</tool_call>\nmiddle\n<tool_call>{\"name\":\"b\",\"arguments\":{\"x\":1}}</tool_call>\ntail","tool_calls":[]}}
+{"op":"format_results","dispatcher":"xml","results":[{"name":"shell","output":"file1.txt\nfile2.txt","success":true,"tool_call_id":null}]}
+{"op":"format_results","dispatcher":"xml","results":[{"name":"shell","output":"command not found","success":false,"tool_call_id":null},{"name":"file_read","output":"hello","success":true,"tool_call_id":null}]}
+{"op":"should_send_tool_specs","dispatcher":"xml"}

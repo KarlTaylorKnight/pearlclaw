@@ -1,0 +1,11 @@
+{"op":"open","path":"$TMP"}
+{"op":"store_with_metadata","key":"alpha","content":"alpha project memory for team runtime","category":"core","session_id":"s1","namespace":"team","importance":0.8}
+{"op":"store_with_metadata","key":"beta","content":"beta project memory for personal runtime","category":"conversation","session_id":"s2","namespace":"personal","importance":0.25}
+{"op":"store","key":"gamma","content":"alpha beta shared daily note","category":"daily","session_id":"s1"}
+{"op":"list","category":"core","session_id":"s1"}
+{"op":"recall","query":"project runtime","limit":10,"session_id":"s1","since":null,"until":null}
+{"op":"recall_namespaced","namespace":"team","query":"project runtime","limit":10,"session_id":null,"since":null,"until":null}
+{"op":"export","filter":{"namespace":"team","session_id":null,"category":null,"since":null,"until":null}}
+{"op":"purge_session","session_id":"s1"}
+{"op":"count"}
+{"op":"close"}

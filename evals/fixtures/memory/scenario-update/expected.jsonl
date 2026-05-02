@@ -1,0 +1,5 @@
+{"op":"get","result":{"category":"core","content":"first content","id":"<UUID>","importance":0.9,"key":"same","namespace":"first-ns","score":null,"session_id":"s1","superseded_by":null,"timestamp":"<TS>"}}
+{"op":"get","result":{"category":"daily","content":"second content","id":"<UUID>","importance":0.9,"key":"same","namespace":"first-ns","score":null,"session_id":"s2","superseded_by":null,"timestamp":"<TS>"}}
+{"op":"export","result":[{"category":"daily","content":"second content","id":"<UUID>","importance":0.9,"key":"same","namespace":"first-ns","score":null,"session_id":"s2","superseded_by":null,"timestamp":"<TS>"}]}
+{"op":"purge_namespace","result":1}
+{"op":"count","result":0}

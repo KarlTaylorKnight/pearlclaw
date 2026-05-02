@@ -1,0 +1,9 @@
+{"op":"open","path":"$TMP"}
+{"op":"store_with_metadata","key":"same","content":"first content","category":"core","session_id":"s1","namespace":"first-ns","importance":0.9}
+{"op":"get","key":"same"}
+{"op":"store","key":"same","content":"second content","category":"daily","session_id":"s2"}
+{"op":"get","key":"same"}
+{"op":"export","filter":{"namespace":"first-ns","session_id":null,"category":null,"since":null,"until":null}}
+{"op":"purge_namespace","namespace":"daily"}
+{"op":"count"}
+{"op":"close"}

@@ -23,8 +23,10 @@ import argparse
 import difflib
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -37,12 +39,47 @@ SUBSYSTEMS = {
         "rust_bin": "eval-parser",
         "zig_bin": "eval-parser",
     },
-    # "memory": ... (added when memory pilot lands)
-    # "dispatcher": ... (added when dispatcher pilot lands)
+    "memory": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-memory",
+        "zig_bin": "eval-memory",
+        "jsonl": True,
+        "temp_paths": True,
+    },
+    "dispatcher": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-dispatcher",
+        "zig_bin": "eval-dispatcher",
+        "jsonl": True,
+    },
 }
 
 
-def canonicalize(blob: bytes) -> str:
+UUID_V4_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
+
+
+def normalize_memory_value(value, key: str | None = None):
+    if isinstance(value, dict):
+        return {k: normalize_memory_value(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize_memory_value(v, key) for v in value]
+    if isinstance(value, str):
+        if key == "id" and UUID_V4_RE.match(value):
+            return "<UUID>"
+        if (key == "timestamp" or (key and key.endswith("_at"))) and RFC3339_RE.match(value):
+            return "<TS>"
+    return value
+
+
+def canonicalize(blob: bytes, *, jsonl: bool = False, normalize_memory: bool = False) -> str:
     """Parse JSON and re-emit with sorted keys / no whitespace.
 
     Rust's eval-parser already emits this form, but normalize defensively
@@ -51,7 +88,19 @@ def canonicalize(blob: bytes) -> str:
     text = blob.decode("utf-8").strip()
     if not text:
         return ""
+    if jsonl:
+        lines = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            obj = json.loads(line)
+            if normalize_memory:
+                obj = normalize_memory_value(obj)
+            lines.append(json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        return "\n".join(lines)
     obj = json.loads(text)
+    if normalize_memory:
+        obj = normalize_memory_value(obj)
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -95,8 +144,12 @@ def run_subsystem(name: str, rust_dir: Path | None, zig_dir: Path | None,
 
     failures = 0
     for inp in inputs:
-        stem = inp.name.removesuffix(".input.txt")
-        expected = inp.with_name(stem + cfg["expected_suffix"])
+        if "expected_name" in cfg:
+            stem = inp.parent.name
+            expected = inp.with_name(cfg["expected_name"])
+        else:
+            stem = inp.name.removesuffix(".input.txt")
+            expected = inp.with_name(stem + cfg["expected_suffix"])
 
         with open(inp, "rb") as f:
             input_bytes = f.read()
@@ -105,20 +158,36 @@ def run_subsystem(name: str, rust_dir: Path | None, zig_dir: Path | None,
         zig_out: str | None = None
 
         if rust_bin and rust_bin.exists():
-            stdout, stderr, rc = run_runner(rust_bin, input_bytes)
+            runner_input = input_bytes
+            with tempfile.TemporaryDirectory(prefix=f"zeroclaw-eval-{name}-{stem}-rust-") as tmp:
+                if cfg.get("temp_paths"):
+                    runner_input = input_bytes.replace(b"$TMP", str(Path(tmp)).encode())
+                stdout, stderr, rc = run_runner(rust_bin, runner_input)
             if rc != 0:
                 print(f"[{name}/{stem}] rust runner failed (rc={rc}): {stderr.decode(errors='replace')}")
                 failures += 1
                 continue
-            rust_out = canonicalize(stdout)
+            rust_out = canonicalize(
+                stdout,
+                jsonl=cfg.get("jsonl", False),
+                normalize_memory=(name == "memory"),
+            )
 
         if zig_bin and zig_bin.exists():
-            stdout, stderr, rc = run_runner(zig_bin, input_bytes)
+            runner_input = input_bytes
+            with tempfile.TemporaryDirectory(prefix=f"zeroclaw-eval-{name}-{stem}-zig-") as tmp:
+                if cfg.get("temp_paths"):
+                    runner_input = input_bytes.replace(b"$TMP", str(Path(tmp)).encode())
+                stdout, stderr, rc = run_runner(zig_bin, runner_input)
             if rc != 0:
                 print(f"[{name}/{stem}] zig runner failed (rc={rc}): {stderr.decode(errors='replace')}")
                 failures += 1
                 continue
-            zig_out = canonicalize(stdout)
+            zig_out = canonicalize(
+                stdout,
+                jsonl=cfg.get("jsonl", False),
+                normalize_memory=(name == "memory"),
+            )
 
         if update_golden and rust_out is not None:
             with open(expected, "w") as f:

@@ -1,0 +1,6 @@
+{"op":"list","result":[{"category":"core","content":"alpha project memory for team runtime","id":"<UUID>","importance":0.8,"key":"alpha","namespace":"team","score":null,"session_id":"s1","superseded_by":null,"timestamp":"<TS>"}]}
+{"op":"recall","result":[{"category":"core","content":"alpha project memory for team runtime","id":"<UUID>","importance":0.8,"key":"alpha","namespace":"team","score":1.9599108327383874e-06,"session_id":"s1","superseded_by":null,"timestamp":"<TS>"}]}
+{"op":"recall_namespaced","result":[{"category":"core","content":"alpha project memory for team runtime","id":"<UUID>","importance":0.8,"key":"alpha","namespace":"team","score":1.9599108327383874e-06,"session_id":"s1","superseded_by":null,"timestamp":"<TS>"}]}
+{"op":"export","result":[{"category":"core","content":"alpha project memory for team runtime","id":"<UUID>","importance":0.8,"key":"alpha","namespace":"team","score":null,"session_id":"s1","superseded_by":null,"timestamp":"<TS>"}]}
+{"op":"purge_session","result":2}
+{"op":"count","result":1}

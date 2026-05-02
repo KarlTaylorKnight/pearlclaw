@@ -14,7 +14,7 @@
 //! Run: `zig build bench -Doptimize=ReleaseFast > raw-zig-<date>.json`
 
 const std = @import("std");
-// const zeroclaw = @import("zeroclaw");
+const zeroclaw = @import("zeroclaw");
 
 const Sample = struct {
     iterations: u64,
@@ -39,13 +39,10 @@ pub fn main() !void {
     var results = std.ArrayList(BenchResult).init(allocator);
     defer results.deinit();
 
-    // Pilot benchmarks (placeholders — replaced as each port lands):
-    //
-    //   try results.append(try benchXmlParseToolCalls(allocator));
-    //   try results.append(try benchNativeParseToolCalls(allocator));
-    //   try results.append(try benchMemoryStoreSingle(allocator));
-    //   try results.append(try benchMemoryRecallTop10(allocator));
-    //   try results.append(try benchMemoryCount(allocator));
+    // Parser and dispatcher benchmarks land with their dispatcher ports.
+    try results.append(try benchMemoryStoreSingle(allocator));
+    try results.append(try benchMemoryRecallTop10(allocator));
+    try results.append(try benchMemoryCount(allocator));
 
     try emitJson(allocator, results.items);
 }
@@ -142,4 +139,102 @@ pub fn runBench(
         .stddev_ns_per_op = stddev,
         .p99_ns_per_op = p99,
     };
+}
+
+const MemoryBenchCtx = struct {
+    allocator: std.mem.Allocator,
+    memory: *zeroclaw.memory.SqliteMemory,
+    counter: usize = 1000,
+};
+
+fn benchMemoryStoreSingle(allocator: std.mem.Allocator) !BenchResult {
+    const workspace = try tempWorkspace(allocator, "store");
+    defer cleanupWorkspace(allocator, workspace);
+
+    var mem = try zeroclaw.memory.SqliteMemory.new(allocator, workspace);
+    defer mem.deinit();
+    try seedMemory(allocator, &mem);
+
+    var ctx = MemoryBenchCtx{ .allocator = allocator, .memory = &mem };
+    return runBench(allocator, "memory_store_single", @TypeOf(memoryStoreBody), memoryStoreBody, &ctx);
+}
+
+fn benchMemoryRecallTop10(allocator: std.mem.Allocator) !BenchResult {
+    const workspace = try tempWorkspace(allocator, "recall");
+    defer cleanupWorkspace(allocator, workspace);
+
+    var mem = try zeroclaw.memory.SqliteMemory.new(allocator, workspace);
+    defer mem.deinit();
+    try seedMemory(allocator, &mem);
+
+    var ctx = MemoryBenchCtx{ .allocator = allocator, .memory = &mem };
+    return runBench(allocator, "memory_recall_top10", @TypeOf(memoryRecallBody), memoryRecallBody, &ctx);
+}
+
+fn benchMemoryCount(allocator: std.mem.Allocator) !BenchResult {
+    const workspace = try tempWorkspace(allocator, "count");
+    defer cleanupWorkspace(allocator, workspace);
+
+    var mem = try zeroclaw.memory.SqliteMemory.new(allocator, workspace);
+    defer mem.deinit();
+    try seedMemory(allocator, &mem);
+
+    var ctx = MemoryBenchCtx{ .allocator = allocator, .memory = &mem };
+    return runBench(allocator, "memory_count", @TypeOf(memoryCountBody), memoryCountBody, &ctx);
+}
+
+fn seedMemory(allocator: std.mem.Allocator, mem: *zeroclaw.memory.SqliteMemory) !void {
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        var key_buf: [64]u8 = undefined;
+        var content_buf: [128]u8 = undefined;
+        const key = try std.fmt.bufPrint(&key_buf, "key_{d}", .{i});
+        const content = try std.fmt.bufPrint(
+            &content_buf,
+            "Content entry number {d} about zeroclaw agent runtime",
+            .{i},
+        );
+        try mem.store(allocator, key, content, .core, null);
+    }
+}
+
+fn memoryStoreBody(ctx: *MemoryBenchCtx) void {
+    ctx.counter += 1;
+    var key_buf: [64]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "bench_key_{d}", .{ctx.counter}) catch unreachable;
+    ctx.memory.store(
+        ctx.allocator,
+        key,
+        "Benchmark content for store operation",
+        .daily,
+        null,
+    ) catch unreachable;
+}
+
+fn memoryRecallBody(ctx: *MemoryBenchCtx) void {
+    const entries = ctx.memory.recall(ctx.allocator, "zeroclaw agent", 10, null, null, null) catch unreachable;
+    std.mem.doNotOptimizeAway(entries.len);
+    zeroclaw.memory.sqlite.freeEntries(ctx.allocator, entries);
+}
+
+fn memoryCountBody(ctx: *MemoryBenchCtx) void {
+    const count = ctx.memory.count() catch unreachable;
+    std.mem.doNotOptimizeAway(count);
+}
+
+fn tempWorkspace(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    const stamp: u128 = @intCast(std.time.nanoTimestamp());
+    const path = try std.fmt.allocPrint(
+        allocator,
+        "/tmp/zeroclaw-zig-memory-bench-{s}-{d}",
+        .{ name, stamp },
+    );
+    errdefer allocator.free(path);
+    try std.fs.cwd().makePath(path);
+    return path;
+}
+
+fn cleanupWorkspace(allocator: std.mem.Allocator, path: []u8) void {
+    std.fs.deleteTreeAbsolute(path) catch {};
+    allocator.free(path);
 }

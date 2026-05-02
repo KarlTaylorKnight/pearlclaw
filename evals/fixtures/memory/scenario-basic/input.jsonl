@@ -1,0 +1,12 @@
+{"op":"open","path":"$TMP"}
+{"op":"health"}
+{"op":"count"}
+{"op":"store","key":"agent_fact","content":"zeroclaw agent runtime uses tool dispatch","category":"core","session_id":null}
+{"op":"store","key":"daily_note","content":"daily note about sqlite memory","category":"daily","session_id":"s1"}
+{"op":"count"}
+{"op":"get","key":"agent_fact"}
+{"op":"recall","query":"zeroclaw agent","limit":10,"session_id":null,"since":null,"until":null}
+{"op":"list","category":null,"session_id":null}
+{"op":"forget","key":"daily_note"}
+{"op":"count"}
+{"op":"close"}

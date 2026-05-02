@@ -13,6 +13,8 @@
 const std = @import("std");
 
 pub const tool_call_parser = @import("tool_call_parser/root.zig");
+pub const memory = @import("memory/root.zig");
+pub const runtime = @import("runtime/root.zig");
 
 // Re-exports for ergonomics. Stable surface that the pilot will hold to.
 // Real types land here as each module's port reaches green.

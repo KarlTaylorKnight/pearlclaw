@@ -8,8 +8,8 @@
 //!   {"calls":[{"arguments":<json>,"name":"...","tool_call_id":null|"..."}],"text":"..."}
 
 const std = @import("std");
-// const zeroclaw = @import("zeroclaw");
-// const parser = zeroclaw.tool_call_parser;
+const zeroclaw = @import("zeroclaw");
+const parser = zeroclaw.tool_call_parser;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -20,14 +20,29 @@ pub fn main() !void {
     const input = try stdin.readAllAlloc(allocator, 16 * 1024 * 1024);
     defer allocator.free(input);
 
-    // Pilot in progress — emit empty result so the binary builds and the
-    // eval harness works end-to-end. Replace with real call once the
-    // parser port lands:
-    //
-    //   var result = try parser.parseToolCalls(allocator, input);
-    //   defer result.deinit(allocator);
-    //   try emitCanonicalJson(allocator, result, std.io.getStdOut().writer());
+    var result = try parser.parseToolCalls(allocator, input);
+    defer result.deinit(allocator);
 
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("{\"calls\":[],\"text\":\"\"}\n");
+    try emitCanonicalJson(allocator, result, std.io.getStdOut().writer());
+}
+
+fn emitCanonicalJson(allocator: std.mem.Allocator, result: parser.ParseResult, writer: anytype) !void {
+    try writer.writeAll("{\"calls\":[");
+    for (result.calls, 0..) |call, i| {
+        if (i != 0) try writer.writeByte(',');
+        try writer.writeAll("{\"arguments\":");
+        try parser.writeCanonicalJsonValue(allocator, call.arguments, writer);
+        try writer.writeAll(",\"name\":");
+        try std.json.stringify(call.name, .{}, writer);
+        try writer.writeAll(",\"tool_call_id\":");
+        if (call.tool_call_id) |id| {
+            try std.json.stringify(id, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeByte('}');
+    }
+    try writer.writeAll("],\"text\":");
+    try std.json.stringify(result.text, .{}, writer);
+    try writer.writeAll("}\n");
 }

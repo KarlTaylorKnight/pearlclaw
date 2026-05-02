@@ -1,0 +1,6 @@
+{"op":"parse_response","result":{"calls":[{"arguments":{"command":"ls"},"name":"shell","tool_call_id":null}],"text":"Checking"}}
+{"op":"parse_response","result":{"calls":[{"arguments":{"command":"ls -la"},"name":"shell","tool_call_id":null}],"text":"Let me run that."}}
+{"op":"parse_response","result":{"calls":[{"arguments":{},"name":"a","tool_call_id":null},{"arguments":{"x":1},"name":"b","tool_call_id":null}],"text":"first\nmiddle\ntail"}}
+{"op":"format_results","result":{"data":{"content":"[Tool results]\n<tool_result name=\"shell\" status=\"ok\">\nfile1.txt\nfile2.txt\n</tool_result>\n","role":"user"},"type":"Chat"}}
+{"op":"format_results","result":{"data":{"content":"[Tool results]\n<tool_result name=\"shell\" status=\"error\">\ncommand not found\n</tool_result>\n<tool_result name=\"file_read\" status=\"ok\">\nhello\n</tool_result>\n","role":"user"},"type":"Chat"}}
+{"op":"should_send_tool_specs","result":false}
