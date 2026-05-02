@@ -1,0 +1,75 @@
+name: port-ci
+
+# Pilot acceptance gates 1+2: functional parity + test parity.
+# Gate 3 (perf within 2x) is tracked locally in benches/results/reports/ —
+# wired here as an opt-in job once the Week 4 perf-tuning sprint lands.
+# Gate 4 (CI green): this file.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: port-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evals:
+    name: eval parity (Rust ↔ Zig)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Zig 0.14.1
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            eval-tools/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('eval-tools/Cargo.lock', 'rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache zig build cache
+        uses: actions/cache@v4
+        with:
+          path: zig/.zig-cache
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon', 'zig/vendor/sqlite3/VERSION') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+
+      - name: Build eval-tools (Rust release, locked)
+        run: cargo build --manifest-path eval-tools/Cargo.toml --release --locked
+
+      - name: Build zig
+        working-directory: zig
+        run: zig build
+
+      - name: Run zig unit tests
+        working-directory: zig
+        run: zig build test
+
+      - name: Run eval driver — all subsystems (gate 1 byte-equal)
+        run: python3 evals/driver/run_evals.py
+              --rust eval-tools/target/release
+              --zig  zig/zig-out/bin
+
+      - name: Run zeroclaw-memory crate tests (gate 2)
+        run: cargo test --manifest-path rust/Cargo.toml -p zeroclaw-memory --release

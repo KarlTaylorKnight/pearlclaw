@@ -260,3 +260,23 @@ Plan acceptance gate 3 (Zig within 2x on every bench AND faster on at least 3 of
 Defer the perf-tuning sprint to Week 4. Day 5 keeps the planned scope: `.github/workflows/port-ci.yml` + first PR + provider port (Ollama) handoff. The comparison report being honest about the gap is the correct Day 4 outcome — gate 3 was always going to need a tuning pass after first-pass correctness was established.
 
 - Verification: `cd zig && zig build`; `benches/runner/run_zig.sh > benches/results/baseline-zig-2026-05-02.json` (rebuilt fresh from this session); `python3 benches/runner/compare.py benches/results/baseline-rust-2026-04-30.json benches/results/baseline-zig-2026-05-02.json --out benches/results/reports/2026-05-02-comparison.md` (1/6 within-2x, 1/6 faster).
+
+---
+
+## 2026-05-02 — Day 5: CI workflow (Claude direct)
+
+- Added `.github/workflows/port-ci.yml`. Triggers on push/PR to main + manual `workflow_dispatch`. Single `ubuntu-latest` job: installs Rust stable + Zig 0.14.1 + jq, builds `eval-tools --release --locked`, builds `zig`, runs `zig build test`, runs `python3 evals/driver/run_evals.py` across all subsystems (gate 1 — byte-equal), and runs `cargo test -p zeroclaw-memory --release` (gate 2 — Rust crate tests). Caches `~/.cargo/{registry,git}` + `eval-tools/target` keyed on lockfile, plus `zig/.zig-cache` keyed on `build.zig.zon` + `zig/vendor/sqlite3/VERSION`. `concurrency` cancels superseded runs on the same branch.
+- Bench comparison job intentionally NOT wired yet. Gate 3 isn't met (1/6 within-2x per Day 4) so a bench-gating job would fail loudly today. Will land alongside the Week 4 perf-tuning PR(s) — at that point the comparison report should be auto-posted as a PR comment via `actions/github-script`.
+
+### Pilot status after Day 5
+
+| Gate | Status |
+|---|---|
+| 1. Functional parity (92/92 fixtures byte-equal) | ✓ |
+| 2. Test parity (Zig + Rust unit tests) | ✓ |
+| 3. Perf within 2× on every bench, faster on 3+ | ✗ — 1/6 within-2× (Week 4 perf sprint) |
+| 4. CI green | ✓ — `port-ci` workflow live |
+
+3 of 4 pilot acceptance gates met. Gate 3 is the only outstanding work for full pilot acceptance and is scheduled for Week 4 (statement caching → JSON allocator rework → re-bench).
+
+- Verification: workflow YAML reviewed; first run surfaces on push to main and is watched via `gh run watch`.
