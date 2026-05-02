@@ -280,3 +280,19 @@ Defer the perf-tuning sprint to Week 4. Day 5 keeps the planned scope: `.github/
 3 of 4 pilot acceptance gates met. Gate 3 is the only outstanding work for full pilot acceptance and is scheduled for Week 4 (statement caching → JSON allocator rework → re-bench).
 
 - Verification: workflow YAML reviewed; first run surfaces on push to main and is watched via `gh run watch`.
+
+---
+
+## 2026-05-02 — sqlite stmt cache (Codex)
+
+- Added a private prepared-statement cache to `zig/src/memory/sqlite.zig`: `std.StringHashMap(*c.sqlite3_stmt)` keyed by an allocator-owned SQL string copy. `cachedPrepare` reuses statements by running `sqlite3_reset` plus `sqlite3_clear_bindings` on hits; misses prepare once and store both the SQL key and statement in the cache. `SqliteMemory.deinit` finalizes every cached statement and frees every owned key before `sqlite3_close`.
+- Public `SqliteMemory` API and SQL semantics are unchanged. The existing per-method mutex remains the only cache guard; no second lock was added.
+- Memory bench before/after Zig mean ns/op:
+  - `memory_store_single`: `674302.975625` -> `225847.91375` (2.99x faster; Rust ratio now 1.32x).
+  - `memory_recall_top10`: `1895643.52125` -> `398491.2678125` (4.76x faster; Rust ratio now 1.34x).
+  - `memory_count`: `11474.039912109374` -> `399.89043395996094` (28.69x faster; faster than Rust in this run).
+- Eval-driver result: `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin --subsystem memory` passed all three memory scenarios byte-equal.
+- Max cache size observed from the eval scenarios: 10 statements per `SqliteMemory` instance. `scenario-basic` and `scenario-filters` each exercise 10 distinct SQL shapes; `scenario-update` exercises 8.
+- Comparison report: `benches/results/reports/2026-05-02-after-stmt-cache.md` shows the memory benches are now all within 2x of Rust, moving the pilot gate from 1/6 to 3/6 within-2x.
+- Open questions for Claude review: parser benches were not edited; XML parse benches stayed essentially flat, but `native_parse_tool_calls` improved from `202695.612265625` to `62382.3898828125` ns/op in this run. Treat that as benchmark noise or prior current-workspace drift, not as an effect of the SQLite cache. The remaining gate-3 work is still parser/JSON allocation.
+- Verification: `cd zig && zig build`; `cd zig && zig build test`; memory eval driver; `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-memory --release`; `benches/runner/run_zig.sh > benches/results/baseline-zig-after-stmt-cache.json`; `python3 benches/runner/compare.py benches/results/baseline-rust-2026-04-30.json benches/results/baseline-zig-after-stmt-cache.json --out benches/results/reports/2026-05-02-after-stmt-cache.md`.

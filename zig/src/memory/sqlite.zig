@@ -29,6 +29,7 @@ pub const SqliteMemory = struct {
     allocator: std.mem.Allocator,
     db: *c.sqlite3,
     db_path: []u8,
+    stmt_cache: std.StringHashMap(*c.sqlite3_stmt),
     mutex: std.Thread.Mutex = .{},
 
     pub fn new(allocator: std.mem.Allocator, workspace_dir: []const u8) !SqliteMemory {
@@ -62,6 +63,7 @@ pub const SqliteMemory = struct {
             .allocator = allocator,
             .db = db_opt.?,
             .db_path = db_path,
+            .stmt_cache = std.StringHashMap(*c.sqlite3_stmt).init(allocator),
         };
         errdefer self.deinit();
 
@@ -78,6 +80,7 @@ pub const SqliteMemory = struct {
 
     pub fn deinit(self: *SqliteMemory) void {
         self.mutex.lock();
+        self.finalizeCachedStatements();
         _ = c.sqlite3_close(self.db);
         self.allocator.free(self.db_path);
         self.mutex.unlock();
@@ -105,7 +108,7 @@ pub const SqliteMemory = struct {
         defer allocator.free(id);
         const cat = category.asString();
 
-        const stmt = try self.prepare(
+        const stmt = try self.cachedPrepare(
             \\INSERT INTO memories (id, key, content, category, embedding, created_at, updated_at, session_id, namespace, importance)
             \\VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'default', 0.5)
             \\ON CONFLICT(key) DO UPDATE SET
@@ -115,7 +118,6 @@ pub const SqliteMemory = struct {
             \\   updated_at = excluded.updated_at,
             \\   session_id = excluded.session_id
         );
-        defer finalize(stmt);
         try bindText(stmt, 1, id);
         try bindText(stmt, 2, key);
         try bindText(stmt, 3, content);
@@ -148,7 +150,7 @@ pub const SqliteMemory = struct {
         const ns = namespace orelse "default";
         const imp = importance orelse 0.5;
 
-        const stmt = try self.prepare(
+        const stmt = try self.cachedPrepare(
             \\INSERT INTO memories (id, key, content, category, embedding, created_at, updated_at, session_id, namespace, importance)
             \\VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             \\ON CONFLICT(key) DO UPDATE SET
@@ -160,7 +162,6 @@ pub const SqliteMemory = struct {
             \\   namespace = excluded.namespace,
             \\   importance = excluded.importance
         );
-        defer finalize(stmt);
         try bindText(stmt, 1, id);
         try bindText(stmt, 2, key);
         try bindText(stmt, 3, content);
@@ -273,10 +274,9 @@ pub const SqliteMemory = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const stmt = try self.prepare(
+        const stmt = try self.cachedPrepare(
             "SELECT " ++ EntryColumns ++ " FROM memories WHERE key = ?1",
         );
-        defer finalize(stmt);
         try bindText(stmt, 1, key);
 
         const rc = c.sqlite3_step(stmt);
@@ -298,20 +298,18 @@ pub const SqliteMemory = struct {
         errdefer freeEntryList(allocator, &results);
 
         if (category) |cat| {
-            const stmt = try self.prepare("SELECT " ++ EntryColumns ++
+            const stmt = try self.cachedPrepare("SELECT " ++ EntryColumns ++
                 \\ FROM memories
                 \\ WHERE superseded_by IS NULL AND category = ?1 ORDER BY updated_at DESC LIMIT ?2
             );
-            defer finalize(stmt);
             try bindText(stmt, 1, cat.asString());
             try bindInt64(stmt, 2, DefaultListLimit);
             try collectRows(allocator, stmt, &results, null, session_id);
         } else {
-            const stmt = try self.prepare("SELECT " ++ EntryColumns ++
+            const stmt = try self.cachedPrepare("SELECT " ++ EntryColumns ++
                 \\ FROM memories
                 \\ WHERE superseded_by IS NULL ORDER BY updated_at DESC LIMIT ?1
             );
-            defer finalize(stmt);
             try bindInt64(stmt, 1, DefaultListLimit);
             try collectRows(allocator, stmt, &results, null, session_id);
         }
@@ -323,8 +321,7 @@ pub const SqliteMemory = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const stmt = try self.prepare("DELETE FROM memories WHERE key = ?1");
-        defer finalize(stmt);
+        const stmt = try self.cachedPrepare("DELETE FROM memories WHERE key = ?1");
         try bindText(stmt, 1, key);
         try expectDone(stmt);
         return c.sqlite3_changes(self.db) > 0;
@@ -334,8 +331,7 @@ pub const SqliteMemory = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const stmt = try self.prepare("DELETE FROM memories WHERE category = ?1");
-        defer finalize(stmt);
+        const stmt = try self.cachedPrepare("DELETE FROM memories WHERE category = ?1");
         try bindText(stmt, 1, namespace);
         try expectDone(stmt);
         return @intCast(c.sqlite3_changes(self.db));
@@ -345,8 +341,7 @@ pub const SqliteMemory = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const stmt = try self.prepare("DELETE FROM memories WHERE session_id = ?1");
-        defer finalize(stmt);
+        const stmt = try self.cachedPrepare("DELETE FROM memories WHERE session_id = ?1");
         try bindText(stmt, 1, session_id);
         try expectDone(stmt);
         return @intCast(c.sqlite3_changes(self.db));
@@ -356,8 +351,7 @@ pub const SqliteMemory = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const stmt = try self.prepare("SELECT COUNT(*) FROM memories");
-        defer finalize(stmt);
+        const stmt = try self.cachedPrepare("SELECT COUNT(*) FROM memories");
         if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return MemoryError.Sqlite;
         return @intCast(c.sqlite3_column_int64(stmt, 0));
     }
@@ -366,8 +360,7 @@ pub const SqliteMemory = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const stmt = self.prepare("SELECT 1") catch return false;
-        defer finalize(stmt);
+        const stmt = self.cachedPrepare("SELECT 1") catch return false;
         return c.sqlite3_step(stmt) == c.SQLITE_ROW;
     }
 
@@ -396,8 +389,7 @@ pub const SqliteMemory = struct {
         const until_idx = try appendTextFilterOp(&sql, &param_idx, "created_at", "<=", filter.until);
         try sql.appendSlice(" ORDER BY created_at ASC");
 
-        const stmt = try self.prepare(sql.items);
-        defer finalize(stmt);
+        const stmt = try self.cachedPrepare(sql.items);
         if (ns_idx) |idx| try bindText(stmt, idx, filter.namespace.?);
         if (sid_idx) |idx| try bindText(stmt, idx, filter.session_id.?);
         if (cat_idx) |idx| try bindText(stmt, idx, filter.category.?.asString());
@@ -502,8 +494,7 @@ pub const SqliteMemory = struct {
         try sql.writer().print(" ORDER BY updated_at DESC LIMIT ?{d}", .{param_idx});
         const limit_idx = param_idx;
 
-        const stmt = try self.prepare(sql.items);
-        defer finalize(stmt);
+        const stmt = try self.cachedPrepare(sql.items);
         if (sid_idx) |idx| try bindText(stmt, idx, session_id.?);
         if (since_idx) |idx| try bindText(stmt, idx, since.?);
         if (until_idx) |idx| try bindText(stmt, idx, until.?);
@@ -535,7 +526,7 @@ pub const SqliteMemory = struct {
         }
         if (fts_query.items.len == 0) return try allocator.alloc(ScoredId, 0);
 
-        const stmt = try self.prepare(
+        const stmt = try self.cachedPrepare(
             \\SELECT m.id, bm25(memories_fts) as score
             \\FROM memories_fts f
             \\JOIN memories m ON m.rowid = f.rowid
@@ -543,7 +534,6 @@ pub const SqliteMemory = struct {
             \\ORDER BY score
             \\LIMIT ?2
         );
-        defer finalize(stmt);
         try bindText(stmt, 1, fts_query.items);
         try bindInt64(stmt, 2, @intCast(limit));
 
@@ -572,11 +562,10 @@ pub const SqliteMemory = struct {
         id: []const u8,
         score: f64,
     ) !?MemoryEntry {
-        const stmt = try self.prepare(
+        const stmt = try self.cachedPrepare(
             "SELECT " ++ EntryColumns ++
                 " FROM memories WHERE superseded_by IS NULL AND id = ?1",
         );
-        defer finalize(stmt);
         try bindText(stmt, 1, id);
         const rc = c.sqlite3_step(stmt);
         if (rc == c.SQLITE_DONE) return null;
@@ -627,8 +616,7 @@ pub const SqliteMemory = struct {
         try sql.writer().print(" ORDER BY updated_at DESC LIMIT ?{d}", .{param_idx});
         const limit_idx = param_idx;
 
-        const stmt = try self.prepare(sql.items);
-        defer finalize(stmt);
+        const stmt = try self.cachedPrepare(sql.items);
         var bind_idx: c_int = 1;
         for (patterns.items) |pattern| {
             try bindText(stmt, bind_idx, pattern);
@@ -663,13 +651,36 @@ pub const SqliteMemory = struct {
         return stmt.?;
     }
 
+    fn cachedPrepare(self: *SqliteMemory, sql: []const u8) !*c.sqlite3_stmt {
+        if (self.stmt_cache.get(sql)) |stmt| {
+            if (c.sqlite3_reset(stmt) != c.SQLITE_OK) return MemoryError.Sqlite;
+            if (c.sqlite3_clear_bindings(stmt) != c.SQLITE_OK) return MemoryError.Sqlite;
+            return stmt;
+        }
+
+        const key = try self.allocator.dupe(u8, sql);
+        errdefer self.allocator.free(key);
+        const stmt = try self.prepare(sql);
+        errdefer finalize(stmt);
+        try self.stmt_cache.put(key, stmt);
+        return stmt;
+    }
+
+    fn finalizeCachedStatements(self: *SqliteMemory) void {
+        var iterator = self.stmt_cache.iterator();
+        while (iterator.next()) |entry| {
+            finalize(entry.value_ptr.*);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.stmt_cache.deinit();
+    }
+
     fn scalarText(
         self: *SqliteMemory,
         allocator: std.mem.Allocator,
         sql: []const u8,
     ) ![]u8 {
-        const stmt = try self.prepare(sql);
-        defer finalize(stmt);
+        const stmt = try self.cachedPrepare(sql);
         if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return MemoryError.Sqlite;
         return columnTextDup(allocator, stmt, 0);
     }
