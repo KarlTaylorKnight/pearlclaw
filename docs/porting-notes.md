@@ -219,3 +219,44 @@ Same precedent as the parser/memory quirks lists. All confirmed by fixture golde
 - **`eval-tools/Cargo.lock` grew to absorb the full `zeroclaw-runtime` + `zeroclaw-providers` dep tree.** First build is slow (multiple minutes); subsequent incremental builds are fast.
 
 - Verification (this session): `cd zig && zig build`; `cd zig && zig build test`; `cargo build --manifest-path eval-tools/Cargo.toml --release --bin eval-dispatcher`; `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (86 parser + 3 memory + 3 dispatcher = 92/92 fixtures OK).
+
+---
+
+## 2026-05-02 — Day 4: Zig benches + first comparison report (Claude direct)
+
+- Added the 3 parser benches to `zig/bench/agent_benchmarks.zig` (`xml_parse_single_tool_call`, `xml_parse_multi_tool_call`, `native_parse_tool_calls`) with inputs byte-equal to the Rust criterion sources at `rust/benches/agent_benchmarks.rs:152-216`. The 3 memory benches were already wired from Week 3 Day 1. `agent_turn_*` deferred per the dispatcher porting-notes.
+- Added `benches/runner/run_zig.sh` mirroring `run_rust.sh`: builds + runs `zig build bench -Doptimize=ReleaseFast`, then enriches the bare `{lang, version, build_profile, benchmarks}` JSON with `{host: {os, arch, cpu}, timestamp}` via `jq`. Both sides now emit the same common schema.
+- Fixed `benches/runner/compare.py` `pilot_5` → `pilot_set` constant: the plan's "5 of 5" rule was authored before criterion split `xml_parse_tool_calls` into `single`/`multi`, which left the pilot acceptance gate matching zero benches. The set is now the 6 IDs that actually exist on both sides.
+- Captured first Zig baseline at `benches/results/baseline-zig-2026-05-02.json` and rendered the first comparison report at `benches/results/reports/2026-05-02-comparison.md`.
+
+### Performance gap discovered (gate 3 not yet met)
+
+| Benchmark | Rust mean | Zig mean | Ratio | Verdict |
+|---|---:|---:|---:|---|
+| `xml_parse_single_tool_call` | 2.70 µs | 56.00 µs | 20.74x | MUCH SLOWER |
+| `xml_parse_multi_tool_call` | 5.67 µs | 95.35 µs | 16.82x | MUCH SLOWER |
+| `native_parse_tool_calls` | 1.46 µs | 202.70 µs | 139.12x | MUCH SLOWER |
+| `memory_store_single` | 171.61 µs | 674.30 µs | 3.93x | MUCH SLOWER |
+| `memory_recall_top10` | 296.55 µs | 1.90 ms | 6.39x | MUCH SLOWER |
+| `memory_count` | 19.92 µs | 11.47 µs | 0.58x | faster |
+
+Plan acceptance gate 3 (Zig within 2x on every bench AND faster on at least 3 of the pilot benches): currently **1/6 within-2x, 1/6 faster**. The pilot does not yet meet gate 3. Functional parity (gate 1) and test parity (gate 2) are met; CI (gate 4) is unwired.
+
+### Hypothesized perf causes — investigations to launch in Week 4
+
+- **Parser benches (16–139× slower):** every iteration calls `dispatcher.parseResponse(allocator, ...)` which (a) `std.json.parseFromSlice`-arenas the inner JSON, (b) deep-clones the parsed `arguments` value via `parser_types.cloneJsonValue`, then (c) `freeJsonValue`s the recursive structure on `result.deinit`. Two allocations per JSON value plus full traversal-on-free. Rust's `serde_json::Value` likely allocates once and uses cheaper traversal on drop. The 139× ratio on `native_parse_tool_calls` (which parses TWO `arguments` JSON values per iteration) is consistent with this hypothesis — the per-call overhead is amplified by the parse-count.
+- **SQLite benches (4–7× slower):** every store/recall call goes through `prepare → bind → step → finalize`. Statement compilation is repeated per iteration. `rusqlite`'s `cached_statement` caches prepared statements; the Zig port has no cache. Adding a tiny LRU keyed by SQL string in `sqlite.zig` is the obvious fix.
+- **`memory_count` (0.58× — Zig faster):** the only bench with no per-call allocation and a tiny prepared statement (`SELECT COUNT(*) FROM memories`). When allocation/preparation aren't dominant, Zig competes well — supporting the optimization hypotheses above.
+
+### Open follow-ups (ordered by expected impact)
+
+1. **Statement caching in `sqlite.zig`.** Small LRU keyed by SQL string; store `?*c.sqlite3_stmt`, use `sqlite3_reset` between calls instead of `sqlite3_finalize`. Expected impact: 2–4× speedup on memory_store/recall. Single-day Claude effort.
+2. **Reduce JSON double-allocation in dispatcher / parser.** Replace the `parseFromSlice` + `cloneJsonValue` pattern with single-pass parsing that allocates directly into the caller allocator, or hand the caller the arena from `parseFromSlice`. Expected impact: 5–20× speedup on parser benches. Touches `tool_call_parser/types.zig` + the dispatcher's `parseXmlToolCalls`; Codex first-pass plus Claude review fits.
+3. **Arena-per-bench-iteration in benches** (and eventually agent loop). The `GeneralPurposeAllocator`'s per-alloc metadata is overhead the bench will never benefit from; arena-per-turn matches the parser pilot's intent. Lower-effort win that may close part of the parser gap.
+4. **Cross-check with `hyperfine`** on whole-binary timing once #1 + #2 land — confirms the in-process bench harness isn't itself biased.
+
+### Day 5 recommended scope (unchanged)
+
+Defer the perf-tuning sprint to Week 4. Day 5 keeps the planned scope: `.github/workflows/port-ci.yml` + first PR + provider port (Ollama) handoff. The comparison report being honest about the gap is the correct Day 4 outcome — gate 3 was always going to need a tuning pass after first-pass correctness was established.
+
+- Verification: `cd zig && zig build`; `benches/runner/run_zig.sh > benches/results/baseline-zig-2026-05-02.json` (rebuilt fresh from this session); `python3 benches/runner/compare.py benches/results/baseline-rust-2026-04-30.json benches/results/baseline-zig-2026-05-02.json --out benches/results/reports/2026-05-02-comparison.md` (1/6 within-2x, 1/6 faster).

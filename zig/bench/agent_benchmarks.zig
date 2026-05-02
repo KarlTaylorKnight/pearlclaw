@@ -39,10 +39,16 @@ pub fn main() !void {
     var results = std.ArrayList(BenchResult).init(allocator);
     defer results.deinit();
 
-    // Parser and dispatcher benchmarks land with their dispatcher ports.
+    // Mirror rust/benches/agent_benchmarks.rs IDs exactly. Order matches the
+    // Rust source for ease of side-by-side reading.
+    try results.append(try benchXmlParseSingleToolCall(allocator));
+    try results.append(try benchXmlParseMultiToolCall(allocator));
+    try results.append(try benchNativeParseToolCalls(allocator));
     try results.append(try benchMemoryStoreSingle(allocator));
     try results.append(try benchMemoryRecallTop10(allocator));
     try results.append(try benchMemoryCount(allocator));
+    // agent_turn_text_only / agent_turn_with_tool_call deferred — they need
+    // the full Agent + AgentBuilder which is post-pilot runtime/loop_ work.
 
     try emitJson(allocator, results.items);
 }
@@ -141,11 +147,82 @@ pub fn runBench(
     };
 }
 
+const dispatcher_mod = zeroclaw.runtime.agent.dispatcher;
+
 const MemoryBenchCtx = struct {
     allocator: std.mem.Allocator,
     memory: *zeroclaw.memory.SqliteMemory,
     counter: usize = 1000,
 };
+
+const DispatcherBenchCtx = struct {
+    allocator: std.mem.Allocator,
+    dispatcher: dispatcher_mod.ToolDispatcher,
+    response: dispatcher_mod.ChatResponse,
+};
+
+fn dispatcherBody(ctx: *DispatcherBenchCtx) void {
+    var result = ctx.dispatcher.parseResponse(ctx.allocator, ctx.response) catch unreachable;
+    std.mem.doNotOptimizeAway(result.calls.len);
+    result.deinit(ctx.allocator);
+}
+
+// Inputs mirror rust/benches/agent_benchmarks.rs:152-216 byte-for-byte so the
+// two suites measure the same parsing work.
+const xml_single_input =
+    \\Here is my analysis.
+    \\<tool_call>
+    \\{"name": "search", "arguments": {"query": "zeroclaw architecture"}}
+    \\</tool_call>
+    \\Let me know if you need more.
+;
+
+const xml_multi_input =
+    \\<tool_call>
+    \\{"name": "read_file", "arguments": {"path": "src/main.rs"}}
+    \\</tool_call>
+    \\<tool_call>
+    \\{"name": "search", "arguments": {"query": "config"}}
+    \\</tool_call>
+    \\<tool_call>
+    \\{"name": "list_dir", "arguments": {"path": "src/"}}
+    \\</tool_call>
+;
+
+const native_tcs = [_]dispatcher_mod.ToolCall{
+    .{ .id = "tc1", .name = "search", .arguments = "{\"query\": \"zeroclaw\"}" },
+    .{ .id = "tc2", .name = "read_file", .arguments = "{\"path\": \"src/main.rs\"}" },
+};
+
+fn benchXmlParseSingleToolCall(allocator: std.mem.Allocator) !BenchResult {
+    var dispatcher = dispatcher_mod.XmlToolDispatcher{};
+    var ctx = DispatcherBenchCtx{
+        .allocator = allocator,
+        .dispatcher = dispatcher.dispatcher(),
+        .response = .{ .text = xml_single_input },
+    };
+    return runBench(allocator, "xml_parse_single_tool_call", @TypeOf(dispatcherBody), dispatcherBody, &ctx);
+}
+
+fn benchXmlParseMultiToolCall(allocator: std.mem.Allocator) !BenchResult {
+    var dispatcher = dispatcher_mod.XmlToolDispatcher{};
+    var ctx = DispatcherBenchCtx{
+        .allocator = allocator,
+        .dispatcher = dispatcher.dispatcher(),
+        .response = .{ .text = xml_multi_input },
+    };
+    return runBench(allocator, "xml_parse_multi_tool_call", @TypeOf(dispatcherBody), dispatcherBody, &ctx);
+}
+
+fn benchNativeParseToolCalls(allocator: std.mem.Allocator) !BenchResult {
+    var dispatcher = dispatcher_mod.NativeToolDispatcher{};
+    var ctx = DispatcherBenchCtx{
+        .allocator = allocator,
+        .dispatcher = dispatcher.dispatcher(),
+        .response = .{ .text = "I'll help you.", .tool_calls = &native_tcs },
+    };
+    return runBench(allocator, "native_parse_tool_calls", @TypeOf(dispatcherBody), dispatcherBody, &ctx);
+}
 
 fn benchMemoryStoreSingle(allocator: std.mem.Allocator) !BenchResult {
     const workspace = try tempWorkspace(allocator, "store");
