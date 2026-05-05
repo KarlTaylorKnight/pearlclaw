@@ -331,3 +331,66 @@ Defer the perf-tuning sprint to Week 4. Day 5 keeps the planned scope: `.github/
 - Comparison report: `benches/results/reports/2026-05-05-after-arena-reuse.md` shows pilot gate 3 at 6/6 within 2x and 4/6 faster.
 - Open questions for Claude review: none blocking. Optional ergonomics question only: whether to add convenience wrappers later for the common null-scratch path, since Zig call sites now spell the ownership choice explicitly.
 - Verification: `zig fmt --check zig/src/tool_call_parser/types.zig zig/src/tool_call_parser/entry.zig zig/src/tool_call_parser/root.zig zig/src/runtime/agent/dispatcher.zig zig/src/tools/eval_parser.zig zig/src/tools/eval_dispatcher.zig zig/bench/agent_benchmarks.zig`; `cd zig && zig build test`; `cd zig && zig build`; full eval driver; three fresh `benches/runner/run_zig.sh` samples; median selection via `jq`; `python3 benches/runner/compare.py benches/results/baseline-rust-2026-04-30.json /tmp/zig-bench-2.json --out benches/results/reports/2026-05-05-after-arena-reuse.md`.
+
+---
+
+## 2026-05-05 — Week 4 Day 0: Ollama provider port plan (Claude direct)
+
+Pilot fully accepted at `1b6f9e5` (4 of 4 gates green). Week 4 begins the provider port per the plan §"Path to full port" #7 and D8: Ollama + OpenAI/OAuth only, drop everything else.
+
+### Source scope (Ollama)
+
+- `rust/crates/zeroclaw-providers/src/ollama.rs` — 1,436 lines / 52 KB.
+- `rust/crates/zeroclaw-api/src/provider.rs:319` — Provider trait surface (`chat_with_system`, `chat_with_history`, `chat_with_tools`, `chat`, `list_models`, plus capability/default helpers).
+- `rust/crates/zeroclaw-api/src/provider.rs:65` — `ChatResponse` struct (text, tool_calls, usage, reasoning_content). Already has Zig minimal analog in `dispatcher.zig`; reuse and extend.
+
+### Phase 1 (this Codex chunk) — pilot scope
+
+In:
+- Constructors: `new(base_url, api_key)`, `new_with_reasoning(base_url, api_key, reasoning_enabled)`.
+- Pure helpers: `normalize_base_url`, `strip_think_tags`, `effective_content`, `fallback_text_for_empty_content`, `parse_tool_arguments`, `format_tool_calls_for_loop`, `extract_tool_name_and_args`.
+- Request: `build_chat_request_with_think` + types (`ChatRequest`, `Message`, `Options`, `OutgoingToolCall`, `OutgoingFunction`).
+- Response parsing: `ApiChatResponse`, `ResponseMessage`, `OllamaToolCall`, `OllamaFunction`, `deserialize_args` quirk.
+- Provider method: `chat_with_system(system_prompt, message, model, temperature) -> string` (the simplest trait method; orchestrates above + HTTP).
+- HTTP transport: `std.http.Client` (sync POST to `{base_url}/api/chat`). Per D7 libxev defers; localhost Ollama is sync-friendly.
+
+Out (Phase 2+):
+- `chat_with_history`, `chat_with_tools`, `chat` overloads (need `convert_messages` which is 92 lines on its own).
+- `list_models` (uses GET /api/tags + JSON parse — small, but adds a second endpoint).
+- Multimodal image handling (`convert_user_message_content` + `multimodal::parse_image_markers`).
+- `:cloud` model suffix routing (only relevant for remote Ollama endpoints with API keys).
+- The retry-on-think-failure path in `send_request`.
+- Reasoning provider field (`reasoning_enabled` is plumbed but not exercised in pilot).
+
+### Eval approach (offline; no mock server)
+
+Per D1's "Rust is reference, port doesn't change Rust" spirit, the eval tests deterministic logic — no live HTTP. Both sides expose pure functions for the high-risk paths; eval drives them with JSONL ops.
+
+Eval ops (JSONL, byte-equal compared between Rust + Zig, canonicalized like the dispatcher pilot):
+- `normalize_base_url` — `{op, raw_url}` → `{op, result}` (string).
+- `strip_think_tags` — `{op, text}` → `{op, result}` (string).
+- `effective_content` — `{op, content, thinking?}` → `{op, result}` (string or null).
+- `build_chat_request` — `{op, model, system?, message, temperature, think?, tools?}` → `{op, result}` (serialized ChatRequest JSON object).
+- `parse_chat_response` — `{op, body}` (raw JSON body string from Ollama) → `{op, result}` (parsed ChatResponse JSON).
+- `format_tool_calls_for_loop` — `{op, tool_calls}` (array of {id?, name, arguments}) → `{op, result}` (string with the wrapped JSON the agent loop expects).
+
+The Rust side may need a small amount of `pub` exposure on currently-private helpers (e.g., `parse_chat_response_body(body: &str) -> Result<ChatResponse>`). That's a Rust-side widening, not a behavior change — acceptable per D1's "narrow FFI for parity tests" clause.
+
+Phase 2 (later) can add an end-to-end mock-server fixture for the actual `chat_with_system` HTTP path. Not blocking pilot acceptance.
+
+### Files Codex will create
+
+- `zig/src/providers/root.zig` — re-exports.
+- `zig/src/providers/ollama/root.zig` — re-exports.
+- `zig/src/providers/ollama/types.zig` — request/response struct types (allocator-owned per D10, deinit pattern matches dispatcher).
+- `zig/src/providers/ollama/client.zig` — `OllamaProvider` struct + Phase 1 methods.
+- `zig/src/tools/eval_providers.zig` — Zig eval binary with JSONL op dispatcher.
+- `eval-tools/src/bin/eval-providers.rs` — Rust counterpart.
+- `evals/fixtures/providers/ollama/scenario-{basic-chat,with-system-prompt,strip-think,tool-call-response,empty-content-fallback}/{input,expected}.jsonl` — 5 scenarios.
+- Updates to `evals/driver/run_evals.py` (register `providers` subsystem), `zig/build.zig` (add `eval-providers` exe), `zig/src/root.zig` (add `pub const providers = ...`), `eval-tools/Cargo.toml` (`[[bin]] eval-providers`).
+
+### Pinned questions for Claude review (likely to surface)
+
+- Does Ollama's `<think>` strip differ from the parser pilot's `<think>` strip? Look at `dispatcher.rs:88-105` vs `ollama.rs:215-233` — Ollama's also `.trim()`s the result, so the implementations diverge intentionally.
+- Does `format_tool_calls_for_loop` produce JSON that the existing parser pilot's `parseToolCalls` will then re-parse? If so, the eval should also chain the two and verify the round-trip.
+- HTTP transport is NOT covered by the eval. Worth noting in porting-notes that any HTTP-layer bug would slip the gate. Acceptable for pilot; phase 2 adds mock-server fixture.
