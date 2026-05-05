@@ -413,3 +413,72 @@ Phase 2 (later) can add an end-to-end mock-server fixture for the actual `chat_w
 - Verification: `cd zig && zig build`; `cd zig && zig build test`; `cargo build --manifest-path eval-tools/Cargo.toml --release`; `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release`; `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin`.
 - Surprise during verification: the first sandboxed `cargo test -p zeroclaw-providers --release` run built successfully but failed two existing environment/permission-sensitive tests (`Operation not permitted` and a temporary Bedrock bearer-token env assertion). Rerunning the same command outside the sandbox passed cleanly: 783 Rust tests passed, 0 failed, 1 doctest ignored.
 - Open questions for Claude review: HTTP behavior is compile-checked but not exercised offline; Phase 2 should add a mock-server fixture before expanding into history/tools/streaming. Fixtures avoid missing Ollama tool-call IDs because Rust's fallback is UUID-based and intentionally nondeterministic.
+
+---
+
+## 2026-05-05 — Week 4 OpenAI Phase 1 plan (Claude direct)
+
+Ollama Phase 1 landed at `6c30b90` (97/97 fixtures green). OpenAI Phase 1 mirrors that shape: `chat_with_system` + helpers + API key auth, no OAuth/native tools/list_models/warmup.
+
+### Source scope (OpenAI)
+
+- `rust/crates/zeroclaw-providers/src/openai.rs` — 1,039 lines / 35 KB.
+- `rust/crates/zeroclaw-providers/src/auth/openai_oauth.rs` — 438 lines / 14 KB. **Phase 2** (Week 5+).
+- `rust/crates/zeroclaw-providers/src/auth/oauth_common.rs` — 183 lines / 6 KB. **Phase 2**.
+- `rust/crates/zeroclaw-providers/src/auth/{mod,profiles}.rs` — 574 + 716 lines, both need OpenAI-only trimming. **Phase 2**.
+
+### Phase 1 scope
+
+In:
+- Constructors: `new(credential)`, `with_base_url(base_url, credential)`, `with_max_tokens(max_tokens)` (chained builder).
+- Pure helpers: `adjust_temperature_for_model` (special-cases gpt-5, o1, o3, gpt-5-mini, etc. → forces temp=1.0), `ResponseMessage::effective_content` (content fallback to reasoning_content; always returns String — empty if both are missing).
+- Request shape: simple `ChatRequest` + `Message` types (NOT `NativeChatRequest` — Phase 2).
+- Response parsing: `ChatResponse` (`choices: Vec<Choice>` wrapper) + `Choice` + `ResponseMessage`.
+- `chat_with_system` end-to-end: HTTPS POST `{base_url}/chat/completions` with `Authorization: Bearer <key>` → parse → return `choices[0].message.effective_content()`.
+- HTTPS via `std.http.Client` (Zig 0.14.1 stdlib has TLS — verify in port).
+
+Out (Phase 2+):
+- `chat_with_tools`, `chat` overloads (use `NativeChatRequest`).
+- All native tool-call types: `NativeChatRequest`, `NativeMessage`, `NativeToolSpec`, `NativeToolFunctionSpec`, `NativeToolCall`, `NativeFunctionCall`, `NativeChatResponse`, `UsageInfo`, `PromptTokensDetails`, `NativeChoice`, `NativeResponseMessage`, `parse_native_tool_spec`.
+- `convert_messages`, `convert_tools`, `parse_native_response`.
+- `list_models`, `warmup`.
+- ALL OAuth (entire auth/openai_oauth.rs + auth/oauth_common.rs + auth/{mod,profiles}.rs trims). API key from env var only for Phase 1.
+- `Provider` vtable in Zig — defer to a separate chunk AFTER OpenAI Phase 1 lands. With both providers in place, the abstraction has its 2nd consumer; refactor is a clean follow-up.
+
+### Eval approach (extends existing providers harness)
+
+Reuse `evals/fixtures/providers/` and the existing `eval-providers` binaries. Each op gains a `"provider"` field (`"ollama"` or `"openai"`); existing Ollama fixtures stay byte-equal (default provider="ollama" or explicit, both fine).
+
+Four OpenAI ops:
+- `build_chat_request` — input `{provider:"openai", model, system?, message, temperature, max_tokens?}` → `{result: <ChatRequest as JSON>}`.
+- `parse_chat_response` — input `{provider:"openai", body: <raw JSON>}` → `{result: <ChatResponse with text, tool_calls=[], usage=null, reasoning_content>}`.
+- `adjust_temperature_for_model` — input `{provider:"openai", model, requested_temperature}` → `{result: <f64>}`.
+- `effective_content` — input `{provider:"openai", content?: string|null, reasoning_content?: string|null}` → `{result: <string>}` (always a string, may be empty per Rust semantics).
+
+5 fixture scenarios under `evals/fixtures/providers/openai/scenario-*/`:
+- `basic-chat-openai` — build + parse round-trip with simple text response.
+- `with-system-prompt-openai` — build with system + user roles.
+- `temperature-adjusted` — covers `gpt-5`/`o1`/`o3`/`o4-mini` model-specific temp=1.0 forcing.
+- `reasoning-content-fallback` — response with empty `content` + non-empty `reasoning_content` (effective_content fallback).
+- `multiple-choices` — response with `choices.len() > 1` (Rust takes [0]; Zig must too).
+
+### Files Codex creates / modifies
+
+- `zig/src/providers/openai/{root,types,client}.zig`.
+- Updates to `zig/src/providers/root.zig` (add `pub const openai = ...`).
+- Updates to `zig/src/tools/eval_providers.zig` and `eval-tools/src/bin/eval-providers.rs` (provider-field dispatch).
+- 5 new fixture dirs under `evals/fixtures/providers/openai/scenario-*/`.
+- `zig/build.zig` and `eval-tools/Cargo.toml` likely unchanged (eval-providers exe already exists; zeroclaw-providers already linked).
+
+### Rust side surfacing (minimal widening)
+
+- `rust/crates/zeroclaw-providers/src/openai.rs`:
+  - Make pub: `adjust_temperature_for_model`, `ResponseMessage::effective_content` (or wrap in pub helper), the request/response struct types and fields exercised by the eval contract.
+  - Add `pub fn parse_chat_response_body(body: &str) -> anyhow::Result<ProviderChatResponse>` mirroring the response-handling logic in `chat_with_system` (lines 405-413).
+  - Visibility-only; `cargo test -p zeroclaw-providers --release` must still pass (currently 783).
+
+### Pinned questions for Claude review (likely to surface)
+
+- TLS via `std.http.Client` in Zig 0.14.1: does it work out of the box for `https://api.openai.com/v1/...`? If not, may need to vendor a TLS lib or use an alternate HTTP path. Phase 1 must verify.
+- `ResponseMessage::effective_content` returns `String` always (empty when neither field present). Zig should match — return empty `[]u8`, not null, not error.
+- Multiple choices: Rust `choices[0]` panics on empty. The eval should NOT exercise empty-choices (runtime panic in Rust); fixtures cover `len() == 1` and `len() > 1`, both pick [0].
