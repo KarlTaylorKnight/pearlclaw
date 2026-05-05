@@ -1,0 +1,3 @@
+{"op":"parse_chat_response","result":{"reasoning_content":null,"text":"I was thinking about this: <think>only thinking</think>... but I didn't complete my response. Could you try asking again?","tool_calls":[],"usage":null}}
+{"op":"parse_chat_response","result":{"reasoning_content":null,"text":"I couldn't get a complete response from Ollama. Please try again or switch to a different model.","tool_calls":[],"usage":null}}
+{"op":"effective_content","result":null}

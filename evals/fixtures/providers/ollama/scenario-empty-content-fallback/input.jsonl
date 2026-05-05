@@ -1,0 +1,3 @@
+{"op":"parse_chat_response","body":"{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"<think>only thinking</think>\"}}"}
+{"op":"parse_chat_response","body":"{\"message\":{\"role\":\"assistant\",\"content\":\"   \"}}"}
+{"op":"effective_content","content":"","thinking":"<think>also only thinking</think>"}

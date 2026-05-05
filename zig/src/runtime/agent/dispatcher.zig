@@ -25,13 +25,43 @@ pub const ToolCall = struct {
     id: []const u8,
     name: []const u8,
     arguments: []const u8, // JSON string
+
+    pub fn deinit(self: *ToolCall, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.name);
+        allocator.free(self.arguments);
+        self.* = undefined;
+    }
+};
+
+pub const TokenUsage = struct {
+    input_tokens: ?u64 = null,
+    output_tokens: ?u64 = null,
+    cached_input_tokens: ?u64 = null,
 };
 
 /// Provider response. text is optional; tool_calls may be empty.
 pub const ChatResponse = struct {
     text: ?[]const u8 = null,
     tool_calls: []const ToolCall = &.{},
+    usage: ?TokenUsage = null,
     reasoning_content: ?[]const u8 = null,
+    owned: bool = false,
+
+    pub fn deinit(self: *ChatResponse, allocator: std.mem.Allocator) void {
+        if (!self.owned) {
+            self.* = undefined;
+            return;
+        }
+        if (self.text) |text| allocator.free(text);
+        for (self.tool_calls) |call| {
+            var owned_call = call;
+            owned_call.deinit(allocator);
+        }
+        if (self.tool_calls.len != 0) allocator.free(self.tool_calls);
+        if (self.reasoning_content) |reasoning| allocator.free(reasoning);
+        self.* = undefined;
+    }
 };
 
 /// A single chat message — mirrors zeroclaw_api::provider::ChatMessage.

@@ -394,3 +394,22 @@ Phase 2 (later) can add an end-to-end mock-server fixture for the actual `chat_w
 - Does Ollama's `<think>` strip differ from the parser pilot's `<think>` strip? Look at `dispatcher.rs:88-105` vs `ollama.rs:215-233` — Ollama's also `.trim()`s the result, so the implementations diverge intentionally.
 - Does `format_tool_calls_for_loop` produce JSON that the existing parser pilot's `parseToolCalls` will then re-parse? If so, the eval should also chain the two and verify the round-trip.
 - HTTP transport is NOT covered by the eval. Worth noting in porting-notes that any HTTP-layer bug would slip the gate. Acceptable for pilot; phase 2 adds mock-server fixture.
+
+---
+
+## 2026-05-05 — Ollama provider Phase 1 first-pass (Codex)
+
+- Ported Phase 1 Ollama surface to Zig under `zig/src/providers/ollama/`: constructors (`new`, `newWithReasoning`), URL normalization, think-tag stripping, effective-content fallback, tool argument parsing, tool-call wrapper/prefix extraction, `formatToolCallsForLoop`, request building, response parsing, request JSON emission, and sync `chatWithSystem` via `std.http.Client`.
+- Reused existing runtime provider types instead of duplicating: `zig/src/runtime/agent/dispatcher.zig` now carries `TokenUsage`, `ChatResponse.usage`, owned `ChatResponse.deinit`, and owned `ToolCall.deinit`.
+- Reused the parser pilot JSON machinery (`parseJsonValueOwned`, `cloneJsonValue`, `freeJsonValue`, canonical JSON writer) for provider response/tool argument handling. No second JSON parser or new Zig dependency was added.
+- Rust-side visibility widened only in `rust/crates/zeroclaw-providers/src/ollama.rs`: request/response structs and fields are public, plus `normalize_base_url`, `parse_tool_arguments`, `strip_think_tags`, `effective_content`, `fallback_text_for_empty_content`, `build_chat_request_with_think`, `format_tool_calls_for_loop`, and `extract_tool_name_and_args`. Added `parse_chat_response_body(body: &str) -> anyhow::Result<ChatResponse>` as a pure wrapper over the same response-handling path used by `chat_with_system`.
+- Offline eval ops shipped: `normalize_base_url`, `strip_think_tags`, `effective_content`, `build_chat_request`, `parse_chat_response`, and `format_tool_calls_for_loop`. Added 5 provider scenarios under `evals/fixtures/providers/ollama/`; full eval result is 97/97 fixtures OK (86 parser + 3 memory + 3 dispatcher + 5 providers).
+- Pinned Rust quirks preserved:
+  - `strip_think_tags` removes closed `<think>...</think>` blocks, drops an unclosed think tail, and trims the final content.
+  - `effective_content` tries stripped `content` first, then stripped `thinking`, and returns null when both are empty after stripping.
+  - Ollama `arguments` may be a JSON string; Rust tries to parse it as JSON and falls back to `{}` on parse failure.
+  - Tool-call formatting unwraps nested `tool_call` / `tool.call` / `tool_call>` / `tool_call<` names and emits the wrapped `{"tool_calls":[...]}` loop payload with `arguments` as a JSON string.
+- Phase 2 deferrals remain unchanged: `chat_with_history`, `chat_with_tools`, `chat` overloads, `convert_messages`, `list_models`, multimodal image conversion, `:cloud` routing, retry-on-think-failure, provider vtable, OpenAI/OAuth, live/mock HTTP fixtures, and provider/agent-turn benches.
+- Verification: `cd zig && zig build`; `cd zig && zig build test`; `cargo build --manifest-path eval-tools/Cargo.toml --release`; `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release`; `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin`.
+- Surprise during verification: the first sandboxed `cargo test -p zeroclaw-providers --release` run built successfully but failed two existing environment/permission-sensitive tests (`Operation not permitted` and a temporary Bedrock bearer-token env assertion). Rerunning the same command outside the sandbox passed cleanly: 783 Rust tests passed, 0 failed, 1 doctest ignored.
+- Open questions for Claude review: HTTP behavior is compile-checked but not exercised offline; Phase 2 should add a mock-server fixture before expanding into history/tools/streaming. Fixtures avoid missing Ollama tool-call IDs because Rust's fallback is UUID-based and intentionally nondeterministic.

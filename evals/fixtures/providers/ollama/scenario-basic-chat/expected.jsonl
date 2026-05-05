@@ -1,0 +1,3 @@
+{"op":"normalize_base_url","result":"http://localhost:11434"}
+{"op":"build_chat_request","result":{"messages":[{"content":"Hello Ollama","role":"user"}],"model":"llama3","options":{"temperature":0.8},"stream":false}}
+{"op":"parse_chat_response","result":{"reasoning_content":null,"text":"Hello from Ollama!","tool_calls":[],"usage":{"cached_input_tokens":null,"input_tokens":5,"output_tokens":7}}}

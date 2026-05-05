@@ -16,6 +16,10 @@ path = "src/bin/eval-memory.rs"
 name = "eval-dispatcher"
 path = "src/bin/eval-dispatcher.rs"
 
+[[bin]]
+name = "eval-providers"
+path = "src/bin/eval-providers.rs"
+
 [dependencies]
 zeroclaw-tool-call-parser = { path = "../rust/crates/zeroclaw-tool-call-parser" }
 zeroclaw-memory = { path = "../rust/crates/zeroclaw-memory" }

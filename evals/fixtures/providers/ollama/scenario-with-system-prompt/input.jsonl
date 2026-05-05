@@ -1,0 +1,1 @@
+{"op":"build_chat_request","model":"qwen2.5","system":"You are concise.","message":"Summarize this.","temperature":0.2,"think":false,"tools":[{"type":"function","function":{"name":"shell","description":"Run a shell command","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}}]}

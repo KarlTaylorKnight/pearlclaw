@@ -26,81 +26,81 @@ pub struct OllamaProvider {
 // ─── Request Structures ───────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<Message>,
-    stream: bool,
-    options: Options,
+pub struct ChatRequest {
+    pub model: String,
+    pub messages: Vec<Message>,
+    pub stream: bool,
+    pub options: Options,
     #[serde(skip_serializing_if = "Option::is_none")]
-    think: Option<bool>,
+    pub think: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<serde_json::Value>>,
+    pub tools: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct Message {
-    role: String,
+pub struct Message {
+    pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    images: Option<Vec<String>>,
+    pub images: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<OutgoingToolCall>>,
+    pub tool_calls: Option<Vec<OutgoingToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_name: Option<String>,
+    pub tool_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct OutgoingToolCall {
+pub struct OutgoingToolCall {
     #[serde(rename = "type")]
-    kind: String,
-    function: OutgoingFunction,
+    pub kind: String,
+    pub function: OutgoingFunction,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct OutgoingFunction {
-    name: String,
-    arguments: serde_json::Value,
+pub struct OutgoingFunction {
+    pub name: String,
+    pub arguments: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
-struct Options {
-    temperature: f64,
+pub struct Options {
+    pub temperature: f64,
 }
 
 // ─── Response Structures ──────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-struct ApiChatResponse {
-    message: ResponseMessage,
+pub struct ApiChatResponse {
+    pub message: ResponseMessage,
     #[serde(default)]
-    prompt_eval_count: Option<u64>,
+    pub prompt_eval_count: Option<u64>,
     #[serde(default)]
-    eval_count: Option<u64>,
+    pub eval_count: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponseMessage {
+pub struct ResponseMessage {
     #[serde(default)]
-    content: String,
+    pub content: String,
     #[serde(default)]
-    tool_calls: Vec<OllamaToolCall>,
+    pub tool_calls: Vec<OllamaToolCall>,
     /// Some models return a "thinking" field with internal reasoning
     #[serde(default)]
-    thinking: Option<String>,
+    pub thinking: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OllamaToolCall {
-    id: Option<String>,
-    function: OllamaFunction,
+pub struct OllamaToolCall {
+    pub id: Option<String>,
+    pub function: OllamaFunction,
 }
 
 #[derive(Debug, Deserialize)]
-struct OllamaFunction {
-    name: String,
+pub struct OllamaFunction {
+    pub name: String,
     #[serde(default, deserialize_with = "deserialize_args")]
-    arguments: serde_json::Value,
+    pub arguments: serde_json::Value,
 }
 
 // ─── serde Helpers ───────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ where
 // ─── Implementation ───────────────────────────────────────────────────────────
 
 impl OllamaProvider {
-    fn normalize_base_url(raw_url: &str) -> String {
+    pub fn normalize_base_url(raw_url: &str) -> String {
         let trimmed = raw_url.trim().trim_end_matches('/');
         if trimmed.is_empty() {
             return String::new();
@@ -195,7 +195,7 @@ impl OllamaProvider {
         Ok((normalized_model, should_auth))
     }
 
-    fn parse_tool_arguments(arguments: &str) -> serde_json::Value {
+    pub fn parse_tool_arguments(arguments: &str) -> serde_json::Value {
         serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({}))
     }
 
@@ -212,7 +212,7 @@ impl OllamaProvider {
     /// Qwen and other reasoning models may embed chain-of-thought inline
     /// in the `content` field using `<think>` tags.  These must be stripped
     /// before returning text to the user or parsing for tool calls.
-    fn strip_think_tags(s: &str) -> String {
+    pub fn strip_think_tags(s: &str) -> String {
         let mut result = String::with_capacity(s.len());
         let mut rest = s;
         loop {
@@ -236,7 +236,7 @@ impl OllamaProvider {
     /// and falling back to the `thinking` field when `content` is empty after
     /// stripping.  This ensures that tool-call XML tags embedded alongside (or
     /// after) thinking blocks are preserved for downstream parsing.
-    fn effective_content(content: &str, thinking: Option<&str>) -> Option<String> {
+    pub fn effective_content(content: &str, thinking: Option<&str>) -> Option<String> {
         // First try the content field with think tags stripped.
         let stripped = Self::strip_think_tags(content);
         if !stripped.trim().is_empty() {
@@ -260,7 +260,7 @@ impl OllamaProvider {
         None
     }
 
-    fn fallback_text_for_empty_content(model: &str, thinking: Option<&str>) -> String {
+    pub fn fallback_text_for_empty_content(model: &str, thinking: Option<&str>) -> String {
         if let Some(thinking) = thinking.map(str::trim).filter(|value| !value.is_empty()) {
             let thinking_log_excerpt: String = thinking.chars().take(100).collect();
             let thinking_reply_excerpt: String = thinking.chars().take(200).collect();
@@ -301,7 +301,7 @@ impl OllamaProvider {
     }
 
     /// Build a chat request with an explicit `think` value.
-    fn build_chat_request_with_think(
+    pub fn build_chat_request_with_think(
         &self,
         messages: Vec<Message>,
         model: &str,
@@ -567,7 +567,7 @@ impl OllamaProvider {
     /// Handles quirky model behavior where tool calls are wrapped:
     /// - `{"name": "tool_call", "arguments": {"name": "shell", "arguments": {...}}}`
     /// - `{"name": "tool.shell", "arguments": {...}}`
-    fn format_tool_calls_for_loop(&self, tool_calls: &[OllamaToolCall]) -> String {
+    pub fn format_tool_calls_for_loop(&self, tool_calls: &[OllamaToolCall]) -> String {
         let formatted_calls: Vec<serde_json::Value> = tool_calls
             .iter()
             .map(|tc| {
@@ -596,7 +596,7 @@ impl OllamaProvider {
     }
 
     /// Extract the actual tool name and arguments from potentially nested structures
-    fn extract_tool_name_and_args(&self, tc: &OllamaToolCall) -> (String, serde_json::Value) {
+    pub fn extract_tool_name_and_args(&self, tc: &OllamaToolCall) -> (String, serde_json::Value) {
         let name = &tc.function.name;
         let args = &tc.function.arguments;
 
@@ -630,6 +630,65 @@ impl OllamaProvider {
 
         // Pattern 3: Normal tool call
         (name.clone(), args.clone())
+    }
+
+    pub fn parse_chat_response_body(body: &str) -> anyhow::Result<ChatResponse> {
+        let response: ApiChatResponse = serde_json::from_str(body)?;
+        let provider = Self::new(None, None);
+
+        let usage = if response.prompt_eval_count.is_some() || response.eval_count.is_some() {
+            Some(TokenUsage {
+                input_tokens: response.prompt_eval_count,
+                output_tokens: response.eval_count,
+                cached_input_tokens: None,
+            })
+        } else {
+            None
+        };
+
+        if !response.message.tool_calls.is_empty() {
+            let tool_calls: Vec<ToolCall> = response
+                .message
+                .tool_calls
+                .iter()
+                .map(|tc| {
+                    let (name, args) = provider.extract_tool_name_and_args(tc);
+                    ToolCall {
+                        id: tc
+                            .id
+                            .clone()
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                        name,
+                        arguments: serde_json::to_string(&args)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    }
+                })
+                .collect();
+            let text = Self::normalize_response_text(response.message.content);
+            return Ok(ChatResponse {
+                text,
+                tool_calls,
+                usage,
+                reasoning_content: None,
+            });
+        }
+
+        let effective = Self::effective_content(
+            &response.message.content,
+            response.message.thinking.as_deref(),
+        );
+        let text = if let Some(content) = effective {
+            content
+        } else {
+            Self::fallback_text_for_empty_content("ollama", response.message.thinking.as_deref())
+        };
+
+        Ok(ChatResponse {
+            text: Some(text),
+            tool_calls: vec![],
+            usage,
+            reasoning_content: None,
+        })
     }
 }
 

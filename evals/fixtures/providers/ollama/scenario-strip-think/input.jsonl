@@ -1,0 +1,6 @@
+{"op":"strip_think_tags","text":"<think>internal reasoning</think>Hello world"}
+{"op":"strip_think_tags","text":"<think>first</think>A<think>second</think>B"}
+{"op":"strip_think_tags","text":"visible<think>hidden tail"}
+{"op":"effective_content","content":"<think>I should list files</think>\n<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>","thinking":null}
+{"op":"effective_content","content":"","thinking":"<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"date\"}}</tool_call>"}
+{"op":"effective_content","content":"<think>only thinking</think>","thinking":"<think>also only thinking</think>"}

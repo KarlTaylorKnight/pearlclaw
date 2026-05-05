@@ -1,0 +1,6 @@
+{"op":"strip_think_tags","result":"Hello world"}
+{"op":"strip_think_tags","result":"AB"}
+{"op":"strip_think_tags","result":"visible"}
+{"op":"effective_content","result":"<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>"}
+{"op":"effective_content","result":"<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"date\"}}</tool_call>"}
+{"op":"effective_content","result":null}

@@ -77,6 +77,19 @@ pub fn build(b: *std.Build) void {
     linkSqlite(b, eval_dispatcher_exe);
     b.installArtifact(eval_dispatcher_exe);
 
+    const eval_providers_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_providers.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_providers_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_providers_exe = b.addExecutable(.{
+        .name = "eval-providers",
+        .root_module = eval_providers_mod,
+    });
+    linkSqlite(b, eval_providers_exe);
+    b.installArtifact(eval_providers_exe);
+
     // ─── Test step ───────────────────────────────────────────────────────
     const lib_unit_tests = b.addTest(.{ .root_module = zeroclaw_mod });
     linkSqlite(b, lib_unit_tests);
