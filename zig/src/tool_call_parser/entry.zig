@@ -17,6 +17,18 @@ pub fn parseToolCalls(
     allocator: std.mem.Allocator,
     response_raw: []const u8,
 ) types.ParserError!types.ParseResult {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
+    var result = try parseToolCallsInner(arena.allocator(), response_raw);
+    result.arena = arena;
+    return result;
+}
+
+fn parseToolCallsInner(
+    allocator: std.mem.Allocator,
+    response_raw: []const u8,
+) types.ParserError!types.ParseResult {
     const cleaned = try cleanup.stripThinkTags(allocator, response_raw);
     defer allocator.free(cleaned);
     const response = cleaned;

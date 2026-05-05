@@ -154,12 +154,15 @@ pub const NativeToolDispatcher = struct {
     };
 
     fn nativeParseResponse(_: *anyopaque, allocator: std.mem.Allocator, response: ChatResponse) anyerror!ParseResult {
-        const text_owned = try allocator.dupe(u8, response.text orelse "");
-        errdefer allocator.free(text_owned);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const arena_allocator = arena.allocator();
 
-        var calls = std.ArrayList(ParsedToolCall).init(allocator);
+        const text_owned = try arena_allocator.dupe(u8, response.text orelse "");
+
+        var calls = std.ArrayList(ParsedToolCall).init(arena_allocator);
         errdefer {
-            for (calls.items) |*c| c.deinit(allocator);
+            for (calls.items) |*c| c.deinit(arena_allocator);
             calls.deinit();
         }
 
@@ -167,17 +170,15 @@ pub const NativeToolDispatcher = struct {
             // Match Rust: parse arguments JSON; on failure, default to {}
             // (dispatcher.rs:181-188 — tracing::warn! + Value::Object empty).
             var arguments: std.json.Value = blk: {
-                if (try parser_types.parseJsonValueOwned(allocator, tc.arguments)) |v| {
+                if (try parser_types.parseJsonValueOwned(arena_allocator, tc.arguments)) |v| {
                     break :blk v;
                 }
-                break :blk parser_types.emptyObject(allocator);
+                break :blk parser_types.emptyObject(arena_allocator);
             };
-            errdefer parser_types.freeJsonValue(allocator, &arguments);
+            errdefer parser_types.freeJsonValue(arena_allocator, &arguments);
 
-            const name_owned = try allocator.dupe(u8, tc.name);
-            errdefer allocator.free(name_owned);
-            const id_owned = try allocator.dupe(u8, tc.id);
-            errdefer allocator.free(id_owned);
+            const name_owned = try arena_allocator.dupe(u8, tc.name);
+            const id_owned = try arena_allocator.dupe(u8, tc.id);
 
             try calls.append(.{
                 .name = name_owned,
@@ -189,6 +190,7 @@ pub const NativeToolDispatcher = struct {
         return .{
             .text = text_owned,
             .calls = try calls.toOwnedSlice(),
+            .arena = arena,
         };
     }
 
@@ -216,6 +218,15 @@ pub const NativeToolDispatcher = struct {
 // ─── XML parsing helpers ──────────────────────────────────────────────────
 
 fn parseXmlToolCalls(allocator: std.mem.Allocator, response: []const u8) !ParseResult {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
+    var result = try parseXmlToolCallsInner(arena.allocator(), response);
+    result.arena = arena;
+    return result;
+}
+
+fn parseXmlToolCallsInner(allocator: std.mem.Allocator, response: []const u8) !ParseResult {
     const cleaned = try stripThinkTags(allocator, response);
     defer allocator.free(cleaned);
 
@@ -246,23 +257,23 @@ fn parseXmlToolCalls(allocator: std.mem.Allocator, response: []const u8) !ParseR
             // Try to parse JSON inside the tag. On failure, silently drop the
             // call (dispatcher.rs:70-72 — tracing::warn! + falls through to
             // the post-match remaining advance).
-            const parsed_opt = try parser_types.parseJsonValueOwned(allocator, inner_trimmed);
-            if (parsed_opt) |parsed| {
+            if (try parser_types.parseJsonValueOwned(allocator, inner_trimmed)) |parsed| {
                 var parsed_mut = parsed;
                 defer parser_types.freeJsonValue(allocator, &parsed_mut);
 
                 // Extract name (must be non-empty string).
                 const name_str: []const u8 = blk: {
-                    if (parsed != .object) break :blk "";
-                    const name_v = parsed.object.get("name") orelse break :blk "";
+                    if (parsed_mut != .object) break :blk "";
+                    const name_v = parsed_mut.object.get("name") orelse break :blk "";
                     if (name_v != .string) break :blk "";
                     break :blk name_v.string;
                 };
 
                 if (name_str.len > 0) {
-                    var arguments: std.json.Value = if (parsed == .object) blk: {
-                        if (parsed.object.get("arguments")) |a| {
-                            break :blk try parser_types.cloneJsonValue(allocator, a);
+                    var arguments: std.json.Value = if (parsed_mut == .object) blk: {
+                        if (parsed_mut.object.fetchOrderedRemove("arguments")) |removed| {
+                            allocator.free(removed.key);
+                            break :blk removed.value;
                         }
                         break :blk parser_types.emptyObject(allocator);
                     } else parser_types.emptyObject(allocator);

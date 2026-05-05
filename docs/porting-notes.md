@@ -296,3 +296,19 @@ Defer the perf-tuning sprint to Week 4. Day 5 keeps the planned scope: `.github/
 - Comparison report: `benches/results/reports/2026-05-02-after-stmt-cache.md` shows the memory benches are now all within 2x of Rust, moving the pilot gate from 1/6 to 3/6 within-2x.
 - Open questions for Claude review: parser benches were not edited; XML parse benches stayed essentially flat, but `native_parse_tool_calls` improved from `202695.612265625` to `62382.3898828125` ns/op in this run. Treat that as benchmark noise or prior current-workspace drift, not as an effect of the SQLite cache. The remaining gate-3 work is still parser/JSON allocation.
 - Verification: `cd zig && zig build`; `cd zig && zig build test`; memory eval driver; `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-memory --release`; `benches/runner/run_zig.sh > benches/results/baseline-zig-after-stmt-cache.json`; `python3 benches/runner/compare.py benches/results/baseline-rust-2026-04-30.json benches/results/baseline-zig-after-stmt-cache.json --out benches/results/reports/2026-05-02-after-stmt-cache.md`.
+
+---
+
+## 2026-05-02 — JSON arena parser rework (Codex)
+
+- Replaced the hot `std.json.parseFromSlice` -> `cloneJsonValue` -> recursive free path in `zig/src/tool_call_parser/types.zig` with a single-pass owned JSON parser that allocates directly into the caller allocator. The parser preserves the existing `std.json.Value` representation and strict duplicate-key rejection, and numbers are stored as `.number_string` to avoid lossy or allocator-heavy integer/float conversion.
+- Added optional arena ownership to `ParseResult`. `parseToolCalls`, `NativeToolDispatcher.parseResponse`, and XML dispatcher parsing now allocate one arena per parse result and release it in `ParseResult.deinit`, matching D10's caller-owned API boundary while avoiding per-field recursive frees in the benchmark hot path.
+- XML dispatcher argument extraction now moves the owned `arguments` value out of the parsed object with `fetchOrderedRemove` instead of deep-cloning it.
+- Parser bench before/after Zig mean ns/op, using `benches/results/baseline-zig-after-stmt-cache.json` as the before sample and a fresh `benches/results/baseline-zig-after-json-arena.json` as the after sample:
+  - `xml_parse_single_tool_call`: `56584.2073828125` -> `6832.0296484375` (8.28x faster; Rust ratio now 2.53x).
+  - `xml_parse_multi_tool_call`: `94958.4978125` -> `13490.371005859375` (7.04x faster; Rust ratio now 2.38x).
+  - `native_parse_tool_calls`: `62382.3898828125` -> `17945.399521484374` (3.48x faster; Rust ratio now 12.32x).
+- Eval-driver result: `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` passed all parser, memory, and dispatcher fixtures byte-equal.
+- Comparison report: `benches/results/reports/2026-05-02-after-json-arena.md` still shows gate 3 incomplete: 3/6 pilot benches within 2x and 1/6 faster. Memory remains within 2x; parser is much improved but not accepted.
+- Open questions for Claude review: JSON arena ownership closed the largest obvious allocation/free cycle, but native parsing remains 12.32x slower and XML parsing remains just outside the 2x gate. The next investigation should focus on native dispatcher structure/string allocation overhead and whether the bench should use a per-turn arena shape that mirrors the intended agent loop.
+- Verification: `zig fmt --check zig/src/tool_call_parser/types.zig zig/src/tool_call_parser/entry.zig zig/src/runtime/agent/dispatcher.zig`; `cd zig && zig build test`; `cd zig && zig build`; `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin`; `benches/runner/run_zig.sh > benches/results/baseline-zig-after-json-arena.json`; `python3 benches/runner/compare.py benches/results/baseline-rust-2026-04-30.json benches/results/baseline-zig-after-json-arena.json --out benches/results/reports/2026-05-02-after-json-arena.md`.
