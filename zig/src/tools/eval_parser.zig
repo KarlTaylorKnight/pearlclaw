@@ -20,7 +20,7 @@ pub fn main() !void {
     const input = try stdin.readAllAlloc(allocator, 16 * 1024 * 1024);
     defer allocator.free(input);
 
-    var result = try parser.parseToolCalls(allocator, input);
+    var result = try parser.parseToolCalls(allocator, input, null);
     defer result.deinit(allocator);
 
     try emitCanonicalJson(allocator, result, std.io.getStdOut().writer());

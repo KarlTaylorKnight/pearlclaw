@@ -19,10 +19,15 @@ pub const ParseResult = struct {
     text: []u8,
     calls: []ParsedToolCall,
     arena: ?std.heap.ArenaAllocator = null,
+    arena_backed: bool = false,
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         if (self.arena) |*arena| {
             arena.deinit();
+            self.* = undefined;
+            return;
+        }
+        if (self.arena_backed) {
             self.* = undefined;
             return;
         }

@@ -135,10 +135,10 @@ fn invokeParseResponse(
 ) !dispatcher.ParseResult {
     if (std.mem.eql(u8, dispatcher_kind, "xml")) {
         var x = dispatcher.XmlToolDispatcher{};
-        return x.dispatcher().parseResponse(allocator, response);
+        return x.dispatcher().parseResponse(allocator, response, null);
     } else if (std.mem.eql(u8, dispatcher_kind, "native")) {
         var n = dispatcher.NativeToolDispatcher{};
-        return n.dispatcher().parseResponse(allocator, response);
+        return n.dispatcher().parseResponse(allocator, response, null);
     }
     return EvalError.InvalidScenario;
 }

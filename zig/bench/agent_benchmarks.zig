@@ -159,12 +159,14 @@ const DispatcherBenchCtx = struct {
     allocator: std.mem.Allocator,
     dispatcher: dispatcher_mod.ToolDispatcher,
     response: dispatcher_mod.ChatResponse,
+    scratch_arena: std.heap.ArenaAllocator,
 };
 
 fn dispatcherBody(ctx: *DispatcherBenchCtx) void {
-    var result = ctx.dispatcher.parseResponse(ctx.allocator, ctx.response) catch unreachable;
-    std.mem.doNotOptimizeAway(result.calls.len);
+    var result = ctx.dispatcher.parseResponse(ctx.allocator, ctx.response, &ctx.scratch_arena) catch unreachable;
+    std.mem.doNotOptimizeAway(result);
     result.deinit(ctx.allocator);
+    _ = ctx.scratch_arena.reset(.retain_capacity);
 }
 
 // Inputs mirror rust/benches/agent_benchmarks.rs:152-216 byte-for-byte so the
@@ -200,7 +202,9 @@ fn benchXmlParseSingleToolCall(allocator: std.mem.Allocator) !BenchResult {
         .allocator = allocator,
         .dispatcher = dispatcher.dispatcher(),
         .response = .{ .text = xml_single_input },
+        .scratch_arena = std.heap.ArenaAllocator.init(allocator),
     };
+    defer ctx.scratch_arena.deinit();
     return runBench(allocator, "xml_parse_single_tool_call", @TypeOf(dispatcherBody), dispatcherBody, &ctx);
 }
 
@@ -210,7 +214,9 @@ fn benchXmlParseMultiToolCall(allocator: std.mem.Allocator) !BenchResult {
         .allocator = allocator,
         .dispatcher = dispatcher.dispatcher(),
         .response = .{ .text = xml_multi_input },
+        .scratch_arena = std.heap.ArenaAllocator.init(allocator),
     };
+    defer ctx.scratch_arena.deinit();
     return runBench(allocator, "xml_parse_multi_tool_call", @TypeOf(dispatcherBody), dispatcherBody, &ctx);
 }
 
@@ -220,7 +226,9 @@ fn benchNativeParseToolCalls(allocator: std.mem.Allocator) !BenchResult {
         .allocator = allocator,
         .dispatcher = dispatcher.dispatcher(),
         .response = .{ .text = "I'll help you.", .tool_calls = &native_tcs },
+        .scratch_arena = std.heap.ArenaAllocator.init(allocator),
     };
+    defer ctx.scratch_arena.deinit();
     return runBench(allocator, "native_parse_tool_calls", @TypeOf(dispatcherBody), dispatcherBody, &ctx);
 }
 

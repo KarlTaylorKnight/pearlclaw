@@ -2,7 +2,7 @@
 //!
 //! Public surface mirrors the Rust crate:
 //!   - `ParsedToolCall` (struct)
-//!   - `parseToolCalls(allocator, response) -> ParseResult` (main entry)
+//!   - `parseToolCalls(allocator, response, scratch_arena) -> ParseResult` (main entry)
 //!   - `canonicalizeJsonForToolSignature(...)`
 //!   - `stripThinkTags(...)`
 //!   - `stripToolResultBlocks(...)`

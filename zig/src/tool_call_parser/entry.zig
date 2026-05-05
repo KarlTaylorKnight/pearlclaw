@@ -16,7 +16,14 @@ const FoundNeedle = struct {
 pub fn parseToolCalls(
     allocator: std.mem.Allocator,
     response_raw: []const u8,
+    scratch_arena: ?*std.heap.ArenaAllocator,
 ) types.ParserError!types.ParseResult {
+    if (scratch_arena) |arena| {
+        var result = try parseToolCallsInner(arena.allocator(), response_raw);
+        result.arena_backed = true;
+        return result;
+    }
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
@@ -660,7 +667,7 @@ fn findNextAny(haystack: []const u8, needles: []const []const u8) ?FoundNeedle {
 }
 
 test "smoke" {
-    var result = try parseToolCalls(std.testing.allocator, "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>");
+    var result = try parseToolCalls(std.testing.allocator, "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>", null);
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), result.calls.len);
 }

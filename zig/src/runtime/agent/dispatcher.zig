@@ -90,13 +90,18 @@ pub const ToolDispatcher = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        parseResponse: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, response: ChatResponse) anyerror!ParseResult,
+        parseResponse: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, response: ChatResponse, scratch_arena: ?*std.heap.ArenaAllocator) anyerror!ParseResult,
         formatResults: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, results: []const ToolExecutionResult) anyerror!ConversationMessage,
         shouldSendToolSpecs: *const fn (ptr: *anyopaque) bool,
     };
 
-    pub fn parseResponse(self: ToolDispatcher, allocator: std.mem.Allocator, response: ChatResponse) !ParseResult {
-        return self.vtable.parseResponse(self.ptr, allocator, response);
+    pub fn parseResponse(
+        self: ToolDispatcher,
+        allocator: std.mem.Allocator,
+        response: ChatResponse,
+        scratch_arena: ?*std.heap.ArenaAllocator,
+    ) !ParseResult {
+        return self.vtable.parseResponse(self.ptr, allocator, response, scratch_arena);
     }
     pub fn formatResults(self: ToolDispatcher, allocator: std.mem.Allocator, results: []const ToolExecutionResult) !ConversationMessage {
         return self.vtable.formatResults(self.ptr, allocator, results);
@@ -117,8 +122,13 @@ pub const XmlToolDispatcher = struct {
         .shouldSendToolSpecs = xmlShouldSendToolSpecs,
     };
 
-    fn xmlParseResponse(_: *anyopaque, allocator: std.mem.Allocator, response: ChatResponse) anyerror!ParseResult {
-        return parseXmlToolCalls(allocator, response.text orelse "");
+    fn xmlParseResponse(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        response: ChatResponse,
+        scratch_arena: ?*std.heap.ArenaAllocator,
+    ) anyerror!ParseResult {
+        return parseXmlToolCalls(allocator, response.text orelse "", scratch_arena);
     }
 
     fn xmlFormatResults(_: *anyopaque, allocator: std.mem.Allocator, results: []const ToolExecutionResult) anyerror!ConversationMessage {
@@ -153,16 +163,33 @@ pub const NativeToolDispatcher = struct {
         .shouldSendToolSpecs = nativeShouldSendToolSpecs,
     };
 
-    fn nativeParseResponse(_: *anyopaque, allocator: std.mem.Allocator, response: ChatResponse) anyerror!ParseResult {
+    fn nativeParseResponse(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        response: ChatResponse,
+        scratch_arena: ?*std.heap.ArenaAllocator,
+    ) anyerror!ParseResult {
+        if (scratch_arena) |arena| {
+            var result = try nativeParseResponseInner(arena.allocator(), response);
+            result.arena_backed = true;
+            return result;
+        }
+
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const arena_allocator = arena.allocator();
 
-        const text_owned = try arena_allocator.dupe(u8, response.text orelse "");
+        var result = try nativeParseResponseInner(arena_allocator, response);
+        result.arena = arena;
+        return result;
+    }
 
-        var calls = std.ArrayList(ParsedToolCall).init(arena_allocator);
+    fn nativeParseResponseInner(allocator: std.mem.Allocator, response: ChatResponse) anyerror!ParseResult {
+        const text_owned = try allocator.dupe(u8, response.text orelse "");
+
+        var calls = std.ArrayList(ParsedToolCall).init(allocator);
         errdefer {
-            for (calls.items) |*c| c.deinit(arena_allocator);
+            for (calls.items) |*c| c.deinit(allocator);
             calls.deinit();
         }
 
@@ -170,15 +197,15 @@ pub const NativeToolDispatcher = struct {
             // Match Rust: parse arguments JSON; on failure, default to {}
             // (dispatcher.rs:181-188 — tracing::warn! + Value::Object empty).
             var arguments: std.json.Value = blk: {
-                if (try parser_types.parseJsonValueOwned(arena_allocator, tc.arguments)) |v| {
+                if (try parser_types.parseJsonValueOwned(allocator, tc.arguments)) |v| {
                     break :blk v;
                 }
-                break :blk parser_types.emptyObject(arena_allocator);
+                break :blk parser_types.emptyObject(allocator);
             };
-            errdefer parser_types.freeJsonValue(arena_allocator, &arguments);
+            errdefer parser_types.freeJsonValue(allocator, &arguments);
 
-            const name_owned = try arena_allocator.dupe(u8, tc.name);
-            const id_owned = try arena_allocator.dupe(u8, tc.id);
+            const name_owned = try allocator.dupe(u8, tc.name);
+            const id_owned = try allocator.dupe(u8, tc.id);
 
             try calls.append(.{
                 .name = name_owned,
@@ -190,7 +217,6 @@ pub const NativeToolDispatcher = struct {
         return .{
             .text = text_owned,
             .calls = try calls.toOwnedSlice(),
-            .arena = arena,
         };
     }
 
@@ -217,7 +243,17 @@ pub const NativeToolDispatcher = struct {
 
 // ─── XML parsing helpers ──────────────────────────────────────────────────
 
-fn parseXmlToolCalls(allocator: std.mem.Allocator, response: []const u8) !ParseResult {
+fn parseXmlToolCalls(
+    allocator: std.mem.Allocator,
+    response: []const u8,
+    scratch_arena: ?*std.heap.ArenaAllocator,
+) !ParseResult {
+    if (scratch_arena) |arena| {
+        var result = try parseXmlToolCallsInner(arena.allocator(), response);
+        result.arena_backed = true;
+        return result;
+    }
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
@@ -362,7 +398,7 @@ test "xml dispatcher parses tool call" {
     const response = ChatResponse{
         .text = "Checking\n<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>",
     };
-    var result = try dispatch.parseResponse(allocator, response);
+    var result = try dispatch.parseResponse(allocator, response, null);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.calls.len);
@@ -377,7 +413,7 @@ test "xml dispatcher strips think tags before parsing" {
     const response = ChatResponse{
         .text = "<think>I should list files</think>\n<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>",
     };
-    var result = try dispatch.parseResponse(allocator, response);
+    var result = try dispatch.parseResponse(allocator, response, null);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.calls.len);
@@ -391,7 +427,7 @@ test "xml dispatcher think only returns no calls" {
     const dispatch = x.dispatcher();
 
     const response = ChatResponse{ .text = "<think>Just thinking</think>" };
-    var result = try dispatch.parseResponse(allocator, response);
+    var result = try dispatch.parseResponse(allocator, response, null);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), result.calls.len);
@@ -404,7 +440,7 @@ test "native dispatcher round-trip" {
 
     const tcs = [_]ToolCall{.{ .id = "tc1", .name = "file_read", .arguments = "{\"path\":\"a.txt\"}" }};
     const response = ChatResponse{ .text = "ok", .tool_calls = &tcs };
-    var result = try dispatch.parseResponse(allocator, response);
+    var result = try dispatch.parseResponse(allocator, response, null);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.calls.len);

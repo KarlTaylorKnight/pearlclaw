@@ -1,0 +1,79 @@
+{
+  "lang": "zig",
+  "version": "0.14.1",
+  "build_profile": "ReleaseFast",
+  "benchmarks": [
+    {
+      "id": "xml_parse_single_tool_call",
+      "samples": 100,
+      "iterations_per_sample": 32768,
+      "ns_per_op": {
+        "mean": 545.9936373901368,
+        "median": 543.9766845703125,
+        "stddev": 13.408704034507908,
+        "p99": 607.6342468261719
+      }
+    },
+    {
+      "id": "xml_parse_multi_tool_call",
+      "samples": 100,
+      "iterations_per_sample": 16384,
+      "ns_per_op": {
+        "mean": 1157.7201916503907,
+        "median": 1147.9927368164062,
+        "stddev": 46.42137283719798,
+        "p99": 1329.6632080078125
+      }
+    },
+    {
+      "id": "native_parse_tool_calls",
+      "samples": 100,
+      "iterations_per_sample": 65536,
+      "ns_per_op": {
+        "mean": 261.6857014465332,
+        "median": 260.7625732421875,
+        "stddev": 9.855216414399466,
+        "p99": 299.77825927734375
+      }
+    },
+    {
+      "id": "memory_store_single",
+      "samples": 100,
+      "iterations_per_sample": 64,
+      "ns_per_op": {
+        "mean": 246735.8665625,
+        "median": 241171,
+        "stddev": 50098.05301262504,
+        "p99": 640862.671875
+      }
+    },
+    {
+      "id": "memory_recall_top10",
+      "samples": 100,
+      "iterations_per_sample": 32,
+      "ns_per_op": {
+        "mean": 419005.899375,
+        "median": 413432.4375,
+        "stddev": 28303.288337141716,
+        "p99": 528401.125
+      }
+    },
+    {
+      "id": "memory_count",
+      "samples": 100,
+      "iterations_per_sample": 32768,
+      "ns_per_op": {
+        "mean": 415.4720846557617,
+        "median": 413.7632751464844,
+        "stddev": 12.636208465837273,
+        "p99": 467.73858642578125
+      }
+    }
+  ],
+  "host": {
+    "os": "macOS-15.4",
+    "arch": "x86_64",
+    "cpu": "Intel(R) Xeon(R) W-2191B CPU @ 2.30GHz"
+  },
+  "timestamp": "2026-05-05T04:42:25Z"
+}
