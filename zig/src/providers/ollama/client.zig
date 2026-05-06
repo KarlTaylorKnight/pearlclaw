@@ -178,7 +178,29 @@ pub const OllamaProvider = struct {
 
         return try fallbackTextForEmptyContent(allocator, model, response.message.thinking);
     }
+
+    pub fn provider(self: *OllamaProvider) provider_handle.Provider {
+        return .{ .ptr = @ptrCast(self), .vtable = &ollama_vtable };
+    }
 };
+
+const provider_handle = @import("../provider.zig");
+
+const ollama_vtable: provider_handle.Provider.VTable = .{
+    .chatWithSystem = ollamaChatWithSystem,
+};
+
+fn ollamaChatWithSystem(
+    ptr: *anyopaque,
+    allocator: std.mem.Allocator,
+    system_prompt: ?[]const u8,
+    message: []const u8,
+    model: []const u8,
+    temperature: ?f64,
+) anyerror![]u8 {
+    const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
+    return self.chatWithSystem(allocator, system_prompt, message, model, temperature);
+}
 
 pub fn normalizeBaseUrl(allocator: std.mem.Allocator, raw_url: []const u8) ![]u8 {
     const trimmed_left = std.mem.trim(u8, raw_url, " \t\r\n");
@@ -632,4 +654,13 @@ test "strip think tags drops unclosed tail" {
     const result = try stripThinkTags(std.testing.allocator, "visible<think>hidden");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("visible", result);
+}
+
+test "provider() handle aliases the concrete OllamaProvider" {
+    var concrete = try OllamaProvider.new(std.testing.allocator, null, null);
+    defer concrete.deinit(std.testing.allocator);
+
+    const handle = concrete.provider();
+    try std.testing.expectEqual(@intFromPtr(&concrete), @intFromPtr(handle.ptr));
+    try std.testing.expect(handle.vtable.chatWithSystem == ollamaChatWithSystem);
 }

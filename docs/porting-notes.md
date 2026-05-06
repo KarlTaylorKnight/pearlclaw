@@ -549,3 +549,18 @@ No Rust changes. No fixture changes. Eval harness unchanged (vtable is structura
 - Empty-vtable single-method shape is small enough that a Phase 2 extension is non-breaking — append fields to `VTable`, update vtable consts, no caller code changes required.
 
 No source changes this commit — plan only.
+
+---
+
+## 2026-05-06 — Provider vtable Phase 1 first-pass (Claude direct)
+
+- New `zig/src/providers/provider.zig` (~50 LOC): `Provider` handle (`ptr: *anyopaque, vtable: *const VTable`), `Provider.VTable` carrying a single `chatWithSystem` field, instance method that dispatches through the vtable. Doc-comment captures the receiver-lifetime contract.
+- Both concrete providers gained `pub fn provider(self: *Self) Provider`, a file-private `const <name>_vtable: Provider.VTable`, and a thunk that `@ptrCast(@alignCast(...))` the `*anyopaque` receiver before calling the existing concrete `chatWithSystem`. Imports moved to bottom of `OllamaProvider`/`OpenAiProvider` files (Zig allows trailing top-level decls referencing earlier types).
+- `zig/src/providers/root.zig` re-exports `provider` and `Provider` for callers that don't want to touch the concrete types.
+- No Rust changes. No fixture changes. `eval_providers.zig` and `eval-providers.rs` untouched — vtable is structural and `chatWithSystem` remains HTTP-bound (Phase 2 mock-server fixture territory).
+- New tests (3 added, 29 → 32):
+  - `provider.zig`: stub concrete type implementing only `chatWithSystem`, called through the handle, asserts the receiver pointer round-trips and arguments forward verbatim. Proves the dispatch mechanism in isolation.
+  - `ollama/client.zig`: constructs a real `OllamaProvider`, calls `.provider()`, asserts `@intFromPtr(handle.ptr) == @intFromPtr(&concrete)` and `handle.vtable.chatWithSystem == ollamaChatWithSystem`. Same on the OpenAI side.
+- Verification: `zig build`; `zig build test` (32/32); `cargo build --manifest-path eval-tools/Cargo.toml --release`; `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored — unchanged); `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (102/102 — unchanged).
+- Phase 2 deferrals confirmed unchanged: capability getters (`default_temperature`, `default_max_tokens`, `default_timeout_secs`, `default_base_url`, `default_wire_api`, `capabilities`, `supports_native_tools`/`supports_vision`/`supports_streaming`), additional chat methods (`simple_chat`, `chat_with_history`, `chat`, `chat_with_tools`), `list_models`, `warmup`, `convert_tools`, registry/factory, async-aware vtable shape (likely needed once libxev enters).
+- Open notes for review: the file-private vtable consts live below their owning struct decl in each client.zig — not at module top — to keep the existing struct surface visually intact. If a future refactor moves them, watch for circular `@import("../provider.zig")` ordering (the vtable type only depends on `std`, so re-import position is unconstrained today).

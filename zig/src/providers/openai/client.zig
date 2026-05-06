@@ -143,7 +143,29 @@ pub const OpenAiProvider = struct {
         if (response.choices.len == 0) return error.NoResponseFromOpenAI;
         return response.choices[0].message.effectiveContent(allocator);
     }
+
+    pub fn provider(self: *OpenAiProvider) provider_handle.Provider {
+        return .{ .ptr = @ptrCast(self), .vtable = &openai_vtable };
+    }
 };
+
+const provider_handle = @import("../provider.zig");
+
+const openai_vtable: provider_handle.Provider.VTable = .{
+    .chatWithSystem = openAiChatWithSystem,
+};
+
+fn openAiChatWithSystem(
+    ptr: *anyopaque,
+    allocator: std.mem.Allocator,
+    system_prompt: ?[]const u8,
+    message: []const u8,
+    model: []const u8,
+    temperature: ?f64,
+) anyerror![]u8 {
+    const self: *OpenAiProvider = @ptrCast(@alignCast(ptr));
+    return self.chatWithSystem(allocator, system_prompt, message, model, temperature);
+}
 
 pub fn adjustTemperatureForModel(model: []const u8, requested_temperature: f64) f64 {
     const requires_1_0 = std.mem.eql(u8, model, "gpt-5") or
@@ -274,4 +296,13 @@ fn getObjectField(value: std.json.Value, key: []const u8) ?std.json.Value {
 test "temperature adjustment matches restricted models" {
     try std.testing.expectEqual(@as(f64, 1.0), adjustTemperatureForModel("gpt-5", 0.2));
     try std.testing.expectEqual(@as(f64, 0.2), adjustTemperatureForModel("gpt-4o", 0.2));
+}
+
+test "provider() handle aliases the concrete OpenAiProvider" {
+    var concrete = try OpenAiProvider.new(std.testing.allocator, "test-key");
+    defer concrete.deinit(std.testing.allocator);
+
+    const handle = concrete.provider();
+    try std.testing.expectEqual(@intFromPtr(&concrete), @intFromPtr(handle.ptr));
+    try std.testing.expect(handle.vtable.chatWithSystem == openAiChatWithSystem);
 }
