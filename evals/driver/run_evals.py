@@ -55,7 +55,7 @@ SUBSYSTEMS = {
         "jsonl": True,
     },
     "providers": {
-        "fixture_glob": "ollama/scenario-*/input.jsonl",
+        "fixture_glob": "*/scenario-*/input.jsonl",
         "expected_name": "expected.jsonl",
         "rust_bin": "eval-providers",
         "zig_bin": "eval-providers",

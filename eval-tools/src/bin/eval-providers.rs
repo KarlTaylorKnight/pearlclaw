@@ -7,7 +7,13 @@ use std::io::{self, Read, Write};
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use zeroclaw_providers::ollama::{Message, OllamaFunction, OllamaProvider, OllamaToolCall};
+use zeroclaw_providers::ollama::{
+    Message as OllamaMessage, OllamaFunction, OllamaProvider, OllamaToolCall,
+};
+use zeroclaw_providers::openai::{
+    ChatRequest as OpenAiChatRequest, Message as OpenAiMessage, OpenAiProvider,
+    ResponseMessage as OpenAiResponseMessage,
+};
 use zeroclaw_providers::{ChatResponse, ToolCall};
 
 fn main() -> Result<()> {
@@ -25,9 +31,13 @@ fn main() -> Result<()> {
             .get("op")
             .and_then(Value::as_str)
             .context("op missing")?;
+        let provider = op_value
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("ollama");
 
-        match op {
-            "normalize_base_url" => {
+        match (provider, op) {
+            ("ollama", "normalize_base_url") => {
                 let raw_url = op_value
                     .get("raw_url")
                     .and_then(Value::as_str)
@@ -38,7 +48,7 @@ fn main() -> Result<()> {
                     serde_json::json!(OllamaProvider::normalize_base_url(raw_url)),
                 );
             }
-            "strip_think_tags" => {
+            ("ollama", "strip_think_tags") => {
                 let text = op_value
                     .get("text")
                     .and_then(Value::as_str)
@@ -49,7 +59,7 @@ fn main() -> Result<()> {
                     serde_json::json!(OllamaProvider::strip_think_tags(text)),
                 );
             }
-            "effective_content" => {
+            ("ollama", "effective_content") => {
                 let content = op_value
                     .get("content")
                     .and_then(Value::as_str)
@@ -61,11 +71,28 @@ fn main() -> Result<()> {
                     serde_json::to_value(OllamaProvider::effective_content(content, thinking))?,
                 );
             }
-            "build_chat_request" => {
-                let result = run_build_chat_request(&op_value)?;
+            ("openai", "effective_content") => {
+                let content = optional_string_field(&op_value, "content")?;
+                let reasoning_content = optional_string_field(&op_value, "reasoning_content")?;
+                let message = OpenAiResponseMessage {
+                    content,
+                    reasoning_content,
+                };
+                write_result(
+                    &mut output,
+                    op,
+                    serde_json::json!(message.effective_content()),
+                );
+            }
+            ("ollama", "build_chat_request") => {
+                let result = run_ollama_build_chat_request(&op_value)?;
                 write_result(&mut output, op, result);
             }
-            "parse_chat_response" => {
+            ("openai", "build_chat_request") => {
+                let result = run_openai_build_chat_request(&op_value)?;
+                write_result(&mut output, op, result);
+            }
+            ("ollama", "parse_chat_response") => {
                 let body = op_value
                     .get("body")
                     .and_then(Value::as_str)
@@ -73,7 +100,33 @@ fn main() -> Result<()> {
                 let response = OllamaProvider::parse_chat_response_body(body)?;
                 write_result(&mut output, op, chat_response_to_json(&response));
             }
-            "format_tool_calls_for_loop" => {
+            ("openai", "parse_chat_response") => {
+                let body = op_value
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .context("body missing")?;
+                let response = OpenAiProvider::parse_chat_response_body(body)?;
+                write_result(&mut output, op, chat_response_to_json(&response));
+            }
+            ("openai", "adjust_temperature_for_model") => {
+                let model = op_value
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .context("model missing")?;
+                let requested_temperature = op_value
+                    .get("requested_temperature")
+                    .and_then(Value::as_f64)
+                    .context("requested_temperature missing")?;
+                write_result(
+                    &mut output,
+                    op,
+                    serde_json::json!(OpenAiProvider::adjust_temperature_for_model(
+                        model,
+                        requested_temperature
+                    )),
+                );
+            }
+            ("ollama", "format_tool_calls_for_loop") => {
                 let provider = OllamaProvider::new(None, None);
                 let calls = tool_calls_from_json(&op_value)?;
                 write_result(
@@ -82,7 +135,7 @@ fn main() -> Result<()> {
                     serde_json::json!(provider.format_tool_calls_for_loop(&calls)),
                 );
             }
-            _ => anyhow::bail!("unknown op: {op}"),
+            _ => anyhow::bail!("unknown provider/op: {provider}/{op}"),
         }
     }
 
@@ -90,7 +143,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_build_chat_request(op: &Value) -> Result<Value> {
+fn run_ollama_build_chat_request(op: &Value) -> Result<Value> {
     let model = op
         .get("model")
         .and_then(Value::as_str)
@@ -112,7 +165,7 @@ fn run_build_chat_request(op: &Value) -> Result<Value> {
 
     let mut messages = Vec::new();
     if let Some(system) = op.get("system").and_then(Value::as_str) {
-        messages.push(Message {
+        messages.push(OllamaMessage {
             role: "system".to_string(),
             content: Some(system.to_string()),
             images: None,
@@ -120,7 +173,7 @@ fn run_build_chat_request(op: &Value) -> Result<Value> {
             tool_name: None,
         });
     }
-    messages.push(Message {
+    messages.push(OllamaMessage {
         role: "user".to_string(),
         content: Some(message.to_string()),
         images: None,
@@ -131,6 +184,51 @@ fn run_build_chat_request(op: &Value) -> Result<Value> {
     let provider = OllamaProvider::new(None, None);
     let request =
         provider.build_chat_request_with_think(messages, model, temperature, tools.as_deref(), think);
+    Ok(serde_json::to_value(request)?)
+}
+
+fn run_openai_build_chat_request(op: &Value) -> Result<Value> {
+    let model = op
+        .get("model")
+        .and_then(Value::as_str)
+        .context("model missing")?;
+    let message = op
+        .get("message")
+        .and_then(Value::as_str)
+        .context("message missing")?;
+    let temperature = op
+        .get("temperature")
+        .and_then(Value::as_f64)
+        .context("temperature missing")?;
+    let max_tokens = match op.get("max_tokens") {
+        Some(Value::Null) | None => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .context("max_tokens must be an unsigned integer")?
+                .try_into()
+                .context("max_tokens out of range")?,
+        ),
+    };
+
+    let mut messages = Vec::new();
+    if let Some(system) = op.get("system").and_then(Value::as_str) {
+        messages.push(OpenAiMessage {
+            role: "system".to_string(),
+            content: system.to_string(),
+        });
+    }
+    messages.push(OpenAiMessage {
+        role: "user".to_string(),
+        content: message.to_string(),
+    });
+
+    let request = OpenAiChatRequest {
+        model: model.to_string(),
+        messages,
+        temperature,
+        max_tokens,
+    };
     Ok(serde_json::to_value(request)?)
 }
 
@@ -171,6 +269,14 @@ fn chat_response_to_json(response: &ChatResponse) -> Value {
         })),
         "reasoning_content": response.reasoning_content,
     })
+}
+
+fn optional_string_field(value: &Value, key: &str) -> Result<Option<String>> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(inner)) => Ok(Some(inner.clone())),
+        Some(_) => anyhow::bail!("{key} must be string or null"),
+    }
 }
 
 fn tool_call_to_json(call: &ToolCall) -> Value {

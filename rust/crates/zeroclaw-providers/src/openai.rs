@@ -17,41 +17,41 @@ pub struct OpenAiProvider {
 }
 
 #[derive(Debug, Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<Message>,
-    temperature: f64,
+pub struct ChatRequest {
+    pub model: String,
+    pub messages: Vec<Message>,
+    pub temperature: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
-struct Message {
-    role: String,
-    content: String,
+pub struct Message {
+    pub role: String,
+    pub content: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatResponse {
-    choices: Vec<Choice>,
+pub struct ChatResponse {
+    pub choices: Vec<Choice>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Choice {
-    message: ResponseMessage,
+pub struct Choice {
+    pub message: ResponseMessage,
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponseMessage {
+pub struct ResponseMessage {
     #[serde(default)]
-    content: Option<String>,
+    pub content: Option<String>,
     /// Reasoning/thinking models may return output in `reasoning_content`.
     #[serde(default)]
-    reasoning_content: Option<String>,
+    pub reasoning_content: Option<String>,
 }
 
 impl ResponseMessage {
-    fn effective_content(&self) -> String {
+    pub fn effective_content(&self) -> String {
         match &self.content {
             Some(c) if !c.is_empty() => c.clone(),
             _ => self.reasoning_content.clone().unwrap_or_default(),
@@ -203,7 +203,7 @@ impl OpenAiProvider {
 
     /// Adjust temperature for models that have specific requirements.
     /// Some OpenAI models (like gpt-5-mini, o1, o3, etc) only accept temperature=1.0.
-    fn adjust_temperature_for_model(model: &str, requested_temperature: f64) -> f64 {
+    pub fn adjust_temperature_for_model(model: &str, requested_temperature: f64) -> f64 {
         // Models that require temperature=1.0
         let requires_1_0 = matches!(
             model,
@@ -346,6 +346,25 @@ impl OpenAiProvider {
             120,
             10,
         )
+    }
+
+    pub fn parse_chat_response_body(body: &str) -> anyhow::Result<ProviderChatResponse> {
+        let chat_response: ChatResponse = serde_json::from_str(body)?;
+        let message = chat_response
+            .choices
+            .into_iter()
+            .next()
+            .map(|choice| choice.message)
+            .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
+        let text = message.effective_content();
+        let reasoning_content = message.reasoning_content.clone();
+
+        Ok(ProviderChatResponse {
+            text: Some(text),
+            tool_calls: vec![],
+            usage: None,
+            reasoning_content,
+        })
     }
 }
 

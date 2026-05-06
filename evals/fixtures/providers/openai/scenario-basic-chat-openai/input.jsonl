@@ -1,0 +1,2 @@
+{"op":"build_chat_request","provider":"openai","model":"gpt-4o","system":null,"message":"Hello OpenAI","temperature":0.7,"max_tokens":null}
+{"op":"parse_chat_response","provider":"openai","body":"{\"choices\":[{\"message\":{\"content\":\"Hello from OpenAI!\"}}]}"}

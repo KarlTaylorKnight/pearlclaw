@@ -1,0 +1,6 @@
+{"op":"adjust_temperature_for_model","provider":"openai","model":"gpt-5","requested_temperature":0.2}
+{"op":"adjust_temperature_for_model","provider":"openai","model":"gpt-5-mini","requested_temperature":0.3}
+{"op":"adjust_temperature_for_model","provider":"openai","model":"o1","requested_temperature":0.4}
+{"op":"adjust_temperature_for_model","provider":"openai","model":"o3","requested_temperature":0.5}
+{"op":"adjust_temperature_for_model","provider":"openai","model":"o4-mini","requested_temperature":0.6}
+{"op":"adjust_temperature_for_model","provider":"openai","model":"gpt-4o","requested_temperature":0.42}

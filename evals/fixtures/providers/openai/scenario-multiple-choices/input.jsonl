@@ -1,0 +1,1 @@
+{"op":"parse_chat_response","provider":"openai","body":"{\"choices\":[{\"message\":{\"content\":\"First choice\",\"reasoning_content\":\"first reasoning\"}},{\"message\":{\"content\":\"Second choice\",\"reasoning_content\":\"second reasoning\"}}]}"}

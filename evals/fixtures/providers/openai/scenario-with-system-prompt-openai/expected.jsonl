@@ -1,0 +1,1 @@
+{"op":"build_chat_request","result":{"max_tokens":256,"messages":[{"content":"You are ZeroClaw.","role":"system"},{"content":"Summarize this.","role":"user"}],"model":"gpt-4o-mini","temperature":0.2}}

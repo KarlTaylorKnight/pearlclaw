@@ -1,0 +1,1 @@
+{"op":"build_chat_request","provider":"openai","model":"gpt-4o-mini","system":"You are ZeroClaw.","message":"Summarize this.","temperature":0.2,"max_tokens":256}

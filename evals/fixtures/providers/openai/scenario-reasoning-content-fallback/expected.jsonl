@@ -1,0 +1,5 @@
+{"op":"effective_content","result":"Thinking through the answer"}
+{"op":"effective_content","result":"Fallback reasoning"}
+{"op":"effective_content","result":"Visible answer"}
+{"op":"effective_content","result":""}
+{"op":"parse_chat_response","result":{"reasoning_content":"Reasoned answer","text":"Reasoned answer","tool_calls":[],"usage":null}}

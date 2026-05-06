@@ -7,6 +7,8 @@ const std = @import("std");
 const zeroclaw = @import("zeroclaw");
 const ollama = zeroclaw.providers.ollama;
 const ollama_types = ollama.types;
+const openai = zeroclaw.providers.openai;
+const openai_types = openai.types;
 const dispatcher = zeroclaw.runtime.agent.dispatcher;
 const parser_types = @import("../tool_call_parser/types.zig");
 
@@ -33,18 +35,19 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
     defer parsed.deinit();
     const op = getString(parsed.value, "op") orelse return EvalError.InvalidScenario;
+    const provider = getString(parsed.value, "provider") orelse "ollama";
 
-    if (std.mem.eql(u8, op, "normalize_base_url")) {
+    if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "normalize_base_url")) {
         const raw_url = getString(parsed.value, "raw_url") orelse return EvalError.InvalidScenario;
         const result = try ollama.normalizeBaseUrl(allocator, raw_url);
         defer allocator.free(result);
         try writeStringResult(writer, op, result);
-    } else if (std.mem.eql(u8, op, "strip_think_tags")) {
+    } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "strip_think_tags")) {
         const text = getString(parsed.value, "text") orelse return EvalError.InvalidScenario;
         const result = try ollama.stripThinkTags(allocator, text);
         defer allocator.free(result);
         try writeStringResult(writer, op, result);
-    } else if (std.mem.eql(u8, op, "effective_content")) {
+    } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "effective_content")) {
         const content = getString(parsed.value, "content") orelse return EvalError.InvalidScenario;
         const thinking = getOptionalString(parsed.value, "thinking");
         const result = try ollama.effectiveContent(allocator, content, thinking);
@@ -56,16 +59,37 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
             try writer.writeAll("null");
         }
         try writer.writeAll("}\n");
-    } else if (std.mem.eql(u8, op, "build_chat_request")) {
-        try runBuildChatRequest(allocator, parsed.value, writer);
-    } else if (std.mem.eql(u8, op, "parse_chat_response")) {
+    } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "effective_content")) {
+        const content = getOptionalString(parsed.value, "content");
+        const reasoning_content = getOptionalString(parsed.value, "reasoning_content");
+        const result = try openai.effectiveContent(allocator, content, reasoning_content);
+        defer allocator.free(result);
+        try writeStringResult(writer, op, result);
+    } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "build_chat_request")) {
+        try runOllamaBuildChatRequest(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "build_chat_request")) {
+        try runOpenAiBuildChatRequest(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "parse_chat_response")) {
         const body = getString(parsed.value, "body") orelse return EvalError.InvalidScenario;
         var result = try ollama.parseChatResponseBody(allocator, body);
         defer result.deinit(allocator);
         try writer.writeAll("{\"op\":\"parse_chat_response\",\"result\":");
         try writeChatResponse(writer, result);
         try writer.writeAll("}\n");
-    } else if (std.mem.eql(u8, op, "format_tool_calls_for_loop")) {
+    } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "parse_chat_response")) {
+        const body = getString(parsed.value, "body") orelse return EvalError.InvalidScenario;
+        var result = try openai.parseChatResponseBody(allocator, body);
+        defer result.deinit(allocator);
+        try writer.writeAll("{\"op\":\"parse_chat_response\",\"result\":");
+        try writeChatResponse(writer, result);
+        try writer.writeAll("}\n");
+    } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "adjust_temperature_for_model")) {
+        const model = getString(parsed.value, "model") orelse return EvalError.InvalidScenario;
+        const requested_temperature = getF64(parsed.value, "requested_temperature") orelse return EvalError.InvalidScenario;
+        try writer.writeAll("{\"op\":\"adjust_temperature_for_model\",\"result\":");
+        try std.json.stringify(openai.adjustTemperatureForModel(model, requested_temperature), .{}, writer);
+        try writer.writeAll("}\n");
+    } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "format_tool_calls_for_loop")) {
         const calls = try toolCallsFromOp(allocator, parsed.value);
         defer freeOllamaToolCalls(allocator, calls);
         const result = try ollama.formatToolCallsForLoop(allocator, calls);
@@ -76,7 +100,7 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
     }
 }
 
-fn runBuildChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
+fn runOllamaBuildChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
     const model = getString(op_value, "model") orelse return EvalError.InvalidScenario;
     const system = getOptionalString(op_value, "system");
     const message = getString(op_value, "message") orelse return EvalError.InvalidScenario;
@@ -113,6 +137,39 @@ fn runBuildChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, w
 
     try writer.writeAll("{\"op\":\"build_chat_request\",\"result\":");
     try ollama.client.writeChatRequestJson(allocator, request, writer);
+    try writer.writeAll("}\n");
+}
+
+fn runOpenAiBuildChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
+    const model = getString(op_value, "model") orelse return EvalError.InvalidScenario;
+    const system = getOptionalString(op_value, "system");
+    const message = getString(op_value, "message") orelse return EvalError.InvalidScenario;
+    const temperature = getF64(op_value, "temperature") orelse return EvalError.InvalidScenario;
+    const max_tokens = getOptionalU32(op_value, "max_tokens");
+
+    var messages = std.ArrayList(openai_types.Message).init(allocator);
+    errdefer {
+        for (messages.items) |*entry| entry.deinit(allocator);
+        messages.deinit();
+    }
+    if (system) |sys| try messages.append(try openai_types.Message.init(allocator, "system", sys));
+    try messages.append(try openai_types.Message.init(allocator, "user", message));
+
+    var provider = try openai.OpenAiProvider.new(allocator, "test-openai-key");
+    defer provider.deinit(allocator);
+
+    var request = try provider.buildChatRequest(
+        allocator,
+        try messages.toOwnedSlice(),
+        model,
+        temperature,
+        max_tokens,
+    );
+    defer request.deinit(allocator);
+    messages = std.ArrayList(openai_types.Message).init(allocator);
+
+    try writer.writeAll("{\"op\":\"build_chat_request\",\"result\":");
+    try openai.client.writeChatRequestJson(request, writer);
     try writer.writeAll("}\n");
 }
 
@@ -244,6 +301,16 @@ fn getOptionalBool(value: std.json.Value, key: []const u8) ?bool {
     return switch (field) {
         .null => null,
         .bool => |inner| inner,
+        else => null,
+    };
+}
+
+fn getOptionalU32(value: std.json.Value, key: []const u8) ?u32 {
+    const field = getField(value, key) orelse return null;
+    return switch (field) {
+        .null => null,
+        .integer => |inner| if (inner >= 0 and inner <= std.math.maxInt(u32)) @intCast(inner) else null,
+        .number_string => |raw| std.fmt.parseInt(u32, raw, 10) catch null,
         else => null,
     };
 }

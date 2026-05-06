@@ -482,3 +482,24 @@ Four OpenAI ops:
 - TLS via `std.http.Client` in Zig 0.14.1: does it work out of the box for `https://api.openai.com/v1/...`? If not, may need to vendor a TLS lib or use an alternate HTTP path. Phase 1 must verify.
 - `ResponseMessage::effective_content` returns `String` always (empty when neither field present). Zig should match — return empty `[]u8`, not null, not error.
 - Multiple choices: Rust `choices[0]` panics on empty. The eval should NOT exercise empty-choices (runtime panic in Rust); fixtures cover `len() == 1` and `len() > 1`, both pick [0].
+
+---
+
+## 2026-05-05 — OpenAI provider Phase 1 first-pass (Codex)
+
+- Ported Phase 1 OpenAI surface to Zig under `zig/src/providers/openai/`: constructors (`new`, `withBaseUrl`, `withMaxTokens`), API-key bearer auth for `chatWithSystem`, base URL trailing-slash trimming, max-token request plumbing, `adjustTemperatureForModel`, simple `ChatRequest` / `Message` request JSON, simple `ChatResponse` / `Choice` / `ResponseMessage` parsing, and first-choice `chatWithSystem` response extraction.
+- Reused existing provider/runtime types: `parseChatResponseBody` returns `runtime.agent.dispatcher.ChatResponse` with `owned = true`, `tool_calls = []`, `usage = null`, and duplicated `reasoning_content` when present. Native tool-call types were not ported.
+- Reused the parser pilot JSON machinery (`parseJsonValueOwned`, `freeJsonValue`) for OpenAI response parsing. No second JSON parser, libxev, Provider vtable, or Zig dependency was added.
+- Rust-side visibility widened only in `rust/crates/zeroclaw-providers/src/openai.rs`: simple `ChatRequest`, `Message`, `ChatResponse`, `Choice`, `ResponseMessage` and exercised fields are public; `ResponseMessage::effective_content` and `OpenAiProvider::adjust_temperature_for_model` are public. Added `OpenAiProvider::parse_chat_response_body(body: &str) -> anyhow::Result<ProviderChatResponse>` mirroring the simple `chat_with_system` response handling path.
+- Existing providers eval harness was extended with a `provider` field while preserving missing-provider default to `"ollama"`, so the five Ollama provider scenarios remained byte-equal without fixture edits.
+- OpenAI eval ops shipped: `build_chat_request`, `parse_chat_response`, `adjust_temperature_for_model`, and OpenAI-specific `effective_content`. Added five OpenAI provider scenarios: basic chat, system prompt with `max_tokens`, restricted-model temperature forcing, reasoning-content fallback, and multiple choices.
+- Fixture result: 102/102 fixtures OK (86 parser + 3 memory + 3 dispatcher + 5 Ollama provider + 5 OpenAI provider).
+- Pinned Rust quirks preserved:
+  - Restricted models force temperature to `1.0`: `gpt-5`, `gpt-5-2025-08-07`, `gpt-5-mini`, `gpt-5-mini-2025-08-07`, `gpt-5-nano`, `gpt-5-nano-2025-08-07`, `gpt-5.1-chat-latest`, `gpt-5.2-chat-latest`, `gpt-5.3-chat-latest`, `o1`, `o1-2024-12-17`, `o3`, `o3-2025-04-16`, `o3-mini`, `o3-mini-2025-01-31`, `o4-mini`, `o4-mini-2025-04-16`.
+  - Simple response parsing always takes the first choice and returns an error on empty choices; fixtures intentionally cover one and multiple choices, not zero choices.
+  - `ResponseMessage.effective_content` returns content when `Some` and non-empty, otherwise `reasoning_content`, otherwise an empty string. It does not trim whitespace.
+  - Simple OpenAI `ChatResponse` has no usage field; provider response usage remains null in Phase 1.
+- TLS verification: a one-off Zig 0.14.1 `std.http.Client` GET to `https://api.openai.com/v1/models` succeeded through TLS and returned HTTP `401` without credentials. That confirms stdlib TLS is usable here; no vendored TLS dependency is needed for Phase 1.
+- Phase 2 deferrals remain unchanged: native tool calling (`NativeChatRequest` and related tool/usage structs), `chat_with_tools`, `chat` overloads, `convert_messages`, `convert_tools`, `parse_native_response`, `list_models`, `warmup`, OAuth/profile trimming, provider vtable, mock HTTP fixtures, OpenAI/Ollama live integration tests, provider benches, and agent loop work.
+- Verification: `cd zig && zig build`; `cd zig && zig build test`; `cargo build --manifest-path eval-tools/Cargo.toml --release`; `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored); `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin`.
+- Open questions for Claude review: Phase 1 compiles and TLS-probes the HTTP path, but authenticated OpenAI request/response behavior is still offline-only until Phase 2 mock/live fixtures land. The Zig provider reads the credential supplied to its constructor; wiring from `OPENAI_API_KEY` remains a caller/config concern for the later runtime integration.

@@ -1,0 +1,5 @@
+{"op":"effective_content","provider":"openai","content":"","reasoning_content":"Thinking through the answer"}
+{"op":"effective_content","provider":"openai","content":null,"reasoning_content":"Fallback reasoning"}
+{"op":"effective_content","provider":"openai","content":"Visible answer","reasoning_content":"Ignored reasoning"}
+{"op":"effective_content","provider":"openai","content":null,"reasoning_content":null}
+{"op":"parse_chat_response","provider":"openai","body":"{\"choices\":[{\"message\":{\"content\":\"\",\"reasoning_content\":\"Reasoned answer\"}}]}"}
