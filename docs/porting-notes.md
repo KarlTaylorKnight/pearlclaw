@@ -503,3 +503,49 @@ Four OpenAI ops:
 - Phase 2 deferrals remain unchanged: native tool calling (`NativeChatRequest` and related tool/usage structs), `chat_with_tools`, `chat` overloads, `convert_messages`, `convert_tools`, `parse_native_response`, `list_models`, `warmup`, OAuth/profile trimming, provider vtable, mock HTTP fixtures, OpenAI/Ollama live integration tests, provider benches, and agent loop work.
 - Verification: `cd zig && zig build`; `cd zig && zig build test`; `cargo build --manifest-path eval-tools/Cargo.toml --release`; `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored); `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin`.
 - Open questions for Claude review: Phase 1 compiles and TLS-probes the HTTP path, but authenticated OpenAI request/response behavior is still offline-only until Phase 2 mock/live fixtures land. The Zig provider reads the credential supplied to its constructor; wiring from `OPENAI_API_KEY` remains a caller/config concern for the later runtime integration.
+
+---
+
+## 2026-05-06 — Provider vtable Phase 1 plan (Claude direct)
+
+Both Phase 1 providers landed (Ollama at `6c30b90`, OpenAI at `33cbc59`) and expose identical-shape `chatWithSystem` methods. The plan's "second consumer" condition is met, so the Provider vtable promotes from deferred to next chunk. Claude-direct because the surface is structural and small (~60-80 LOC), no Rust source to port (the Rust trait at `zeroclaw-api/src/provider.rs:319` is the spec but Zig follows the existing `ToolDispatcher` vtable precedent in `zig/src/runtime/agent/dispatcher.zig:117-142`).
+
+### Phase 1 vtable surface
+
+In:
+- `Provider` handle struct: `ptr: *anyopaque, vtable: *const VTable` — same shape as `ToolDispatcher`.
+- `Provider.VTable` with one method: `chatWithSystem(*anyopaque, allocator, ?[]const u8 system_prompt, []const u8 message, []const u8 model, ?f64 temperature) anyerror![]u8`. Signature mirrors the concrete chatWithSystem on both providers exactly.
+- `Provider.chatWithSystem` instance method that dispatches through the vtable.
+- `OllamaProvider.provider(self: *OllamaProvider) Provider` returning the handle, backed by a `const ollama_vtable: Provider.VTable` with one thunk that `@ptrCast(@alignCast(...))` the *anyopaque back to *OllamaProvider and forwards.
+- Same on `OpenAiProvider`.
+
+Out (Phase 2+):
+- All other Rust trait methods: `simple_chat`, `chat_with_history`, `chat`, `chat_with_tools`, `list_models`, `warmup`.
+- Capability getters: `default_temperature`, `default_max_tokens`, `default_timeout_secs`, `default_base_url`, `default_wire_api`, `capabilities`, `supports_native_tools`, `supports_vision`, `supports_streaming`.
+- Tool conversion: `convert_tools`, `convert_messages`, `parse_native_response`.
+- A registry / factory that produces a `Provider` from a config string (`"ollama"`/`"openai"`); deferred until the runtime needs it.
+
+### Files Claude creates / modifies
+
+- New: `zig/src/providers/provider.zig` — Provider handle + VTable.
+- Modified: `zig/src/providers/root.zig` — `pub const provider = @import("provider.zig"); pub const Provider = provider.Provider;`.
+- Modified: `zig/src/providers/ollama/client.zig` — add `provider(self: *OllamaProvider) Provider` plus const vtable + thunk.
+- Modified: `zig/src/providers/openai/client.zig` — same.
+- Modified: `zig/src/providers/ollama/root.zig` — re-export `Provider` for symmetry (optional).
+- Modified: `zig/src/providers/openai/root.zig` — same.
+
+No Rust changes. No fixture changes. Eval harness unchanged (vtable is structural; `chatWithSystem` is HTTP-bound and not eval-exercised in Phase 1, mock fixtures are Phase 2).
+
+### Eval coverage
+
+- `zig build test` adds a unit test that constructs both concrete providers, calls `.provider()`, asserts the vtable function pointer is non-null and the round-trip pointer cast yields the original concrete address.
+- A minimal stub-provider test type within the test scope that records its receiver and verifies the dispatch thunk forwards correctly. This proves the vtable mechanism without touching HTTP.
+- Existing 102/102 fixtures must remain green (this work touches no eval-exercised code path).
+
+### Pinned questions for review
+
+- The Rust `Provider` trait is async (`#[async_trait]`). The Zig vtable is sync because `chatWithSystem` is sync (uses `std.http.Client.fetch`, blocking). Phase 2's libxev integration may make these async; the vtable shape will change then (e.g., return a future / completion handle). Not blocking Phase 1.
+- `*anyopaque` ptr-cast safety: caller must keep the concrete provider alive while the handle exists. Same constraint as `ToolDispatcher`. Documented in the type doc-comment, not enforced at type level (Zig has no lifetime tracking).
+- Empty-vtable single-method shape is small enough that a Phase 2 extension is non-breaking — append fields to `VTable`, update vtable consts, no caller code changes required.
+
+No source changes this commit — plan only.
