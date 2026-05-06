@@ -7,6 +7,11 @@ const dispatcher = @import("../../runtime/agent/dispatcher.zig");
 pub const BASE_URL = "http://localhost:11434";
 pub const TEMPERATURE_DEFAULT: f64 = 0.8;
 
+pub const ProviderChatRequest = struct {
+    messages: []const dispatcher.ChatMessage,
+    tools: ?[]const std.json.Value = null,
+};
+
 pub const OllamaProvider = struct {
     base_url: []u8,
     api_key: ?[]u8 = null,
@@ -117,16 +122,220 @@ pub const OllamaProvider = struct {
         }
         try messages.append(try types.Message.init(allocator, "user", message));
 
-        var request = try self.buildChatRequestWithThink(
+        const api_messages = try messages.toOwnedSlice();
+        defer freeMessages(allocator, api_messages);
+        messages = std.ArrayList(types.Message).init(allocator);
+
+        var response = try self.sendRequest(
             allocator,
-            try messages.toOwnedSlice(),
+            api_messages,
             model,
             temperature orelse TEMPERATURE_DEFAULT,
             null,
+        );
+        defer response.deinit(allocator);
+
+        if (response.message.tool_calls.len != 0) {
+            return try formatToolCallsForLoop(allocator, response.message.tool_calls);
+        }
+
+        if (try effectiveContent(allocator, response.message.content, response.message.thinking)) |content| {
+            return content;
+        }
+
+        return try fallbackTextForEmptyContent(allocator, model, response.message.thinking);
+    }
+
+    pub fn convertMessages(
+        self: *const OllamaProvider,
+        allocator: std.mem.Allocator,
+        messages: []const dispatcher.ChatMessage,
+    ) ![]types.Message {
+        _ = self;
+        var tool_name_by_id = std.StringHashMap([]u8).init(allocator);
+        defer freeToolNameMap(allocator, &tool_name_by_id);
+
+        var converted = std.ArrayList(types.Message).init(allocator);
+        errdefer {
+            for (converted.items) |*entry| entry.deinit(allocator);
+            converted.deinit();
+        }
+
+        for (messages) |message| {
+            if (std.mem.eql(u8, message.role, "assistant")) {
+                if (try convertAssistantMessage(allocator, message, &tool_name_by_id)) |api_message| {
+                    try converted.append(api_message);
+                    continue;
+                }
+            }
+
+            if (std.mem.eql(u8, message.role, "tool")) {
+                if (try convertToolMessage(allocator, message, &tool_name_by_id)) |api_message| {
+                    try converted.append(api_message);
+                    continue;
+                }
+            }
+
+            if (std.mem.eql(u8, message.role, "user")) {
+                {
+                    const role_owned = try allocator.dupe(u8, "user");
+                    errdefer allocator.free(role_owned);
+                    var converted_user = try convertUserMessageContent(allocator, message.content);
+                    errdefer converted_user.deinit(allocator);
+                    try converted.append(.{
+                        .role = role_owned,
+                        .content = converted_user.content,
+                        .images = converted_user.images,
+                        .tool_calls = null,
+                        .tool_name = null,
+                    });
+                }
+                continue;
+            }
+
+            try converted.append(try types.Message.init(allocator, message.role, message.content));
+        }
+
+        return converted.toOwnedSlice();
+    }
+
+    pub fn chatWithHistory(
+        self: *const OllamaProvider,
+        allocator: std.mem.Allocator,
+        messages: []const dispatcher.ChatMessage,
+        model: []const u8,
+        temperature: ?f64,
+    ) ![]u8 {
+        const api_messages = try self.convertMessages(allocator, messages);
+        defer freeMessages(allocator, api_messages);
+
+        var response = try self.sendRequest(
+            allocator,
+            api_messages,
+            model,
+            temperature orelse TEMPERATURE_DEFAULT,
+            null,
+        );
+        defer response.deinit(allocator);
+
+        if (response.message.tool_calls.len != 0) {
+            return try formatToolCallsForLoop(allocator, response.message.tool_calls);
+        }
+
+        if (try effectiveContent(allocator, response.message.content, response.message.thinking)) |content| {
+            return content;
+        }
+
+        return try fallbackTextForEmptyContent(allocator, model, response.message.thinking);
+    }
+
+    pub fn chatWithTools(
+        self: *const OllamaProvider,
+        allocator: std.mem.Allocator,
+        messages: []const dispatcher.ChatMessage,
+        tools: []const std.json.Value,
+        model: []const u8,
+        temperature: ?f64,
+    ) !dispatcher.ChatResponse {
+        const api_messages = try self.convertMessages(allocator, messages);
+        defer freeMessages(allocator, api_messages);
+        const tools_opt: ?[]const std.json.Value = if (tools.len == 0) null else tools;
+
+        var response = try self.sendRequest(
+            allocator,
+            api_messages,
+            model,
+            temperature orelse TEMPERATURE_DEFAULT,
+            tools_opt,
+        );
+        defer response.deinit(allocator);
+
+        return try apiResponseToToolChatResponse(allocator, response, model);
+    }
+
+    pub fn chat(
+        self: *const OllamaProvider,
+        allocator: std.mem.Allocator,
+        request: ProviderChatRequest,
+        model: []const u8,
+        temperature: ?f64,
+    ) !dispatcher.ChatResponse {
+        if (request.tools) |tools| {
+            if (tools.len != 0 and self.supportsNativeTools()) {
+                return try self.chatWithTools(allocator, request.messages, tools, model, temperature);
+            }
+        }
+
+        const text = try self.chatWithHistory(allocator, request.messages, model, temperature);
+        errdefer allocator.free(text);
+        return .{
+            .text = text,
+            .tool_calls = &.{},
+            .usage = null,
+            .reasoning_content = null,
+            .owned = true,
+        };
+    }
+
+    pub fn supportsNativeTools(self: *const OllamaProvider) bool {
+        _ = self;
+        return true;
+    }
+
+    pub fn sendRequest(
+        self: *const OllamaProvider,
+        allocator: std.mem.Allocator,
+        messages: []const types.Message,
+        model: []const u8,
+        temperature: f64,
+        tools: ?[]const std.json.Value,
+    ) !types.ApiChatResponse {
+        return self.sendRequestInner(
+            allocator,
+            messages,
+            model,
+            temperature,
+            shouldUseAuth(self),
+            tools,
             self.reasoning_enabled,
+        ) catch |first_err| {
+            if (self.reasoning_enabled == true) {
+                return self.sendRequestInner(
+                    allocator,
+                    messages,
+                    model,
+                    temperature,
+                    shouldUseAuth(self),
+                    tools,
+                    null,
+                ) catch {
+                    return first_err;
+                };
+            }
+            return first_err;
+        };
+    }
+
+    fn sendRequestInner(
+        self: *const OllamaProvider,
+        allocator: std.mem.Allocator,
+        messages: []const types.Message,
+        model: []const u8,
+        temperature: f64,
+        should_auth: bool,
+        tools: ?[]const std.json.Value,
+        think: ?bool,
+    ) !types.ApiChatResponse {
+        const request_messages = try cloneMessages(allocator, messages);
+        var request = try self.buildChatRequestWithThink(
+            allocator,
+            request_messages,
+            model,
+            temperature,
+            tools,
+            think,
         );
         defer request.deinit(allocator);
-        messages = std.ArrayList(types.Message).init(allocator);
 
         var payload = std.ArrayList(u8).init(allocator);
         defer payload.deinit();
@@ -144,8 +353,8 @@ pub const OllamaProvider = struct {
         var bearer: ?[]u8 = null;
         defer if (bearer) |value| allocator.free(value);
         const auth_header: std.http.Client.Request.Headers.Value = blk: {
-            if (self.api_key) |key| {
-                if (!isLocalEndpoint(self.base_url)) {
+            if (should_auth) {
+                if (self.api_key) |key| {
                     bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{key});
                     break :blk .{ .override = bearer.? };
                 }
@@ -165,18 +374,7 @@ pub const OllamaProvider = struct {
         });
         if (result.status.class() != .success) return error.OllamaHttpError;
 
-        var response = try parseApiChatResponseBody(allocator, body.items);
-        defer response.deinit(allocator);
-
-        if (response.message.tool_calls.len != 0) {
-            return try formatToolCallsForLoop(allocator, response.message.tool_calls);
-        }
-
-        if (try effectiveContent(allocator, response.message.content, response.message.thinking)) |content| {
-            return content;
-        }
-
-        return try fallbackTextForEmptyContent(allocator, model, response.message.thinking);
+        return try parseApiChatResponseBody(allocator, body.items);
     }
 
     pub fn provider(self: *OllamaProvider) provider_handle.Provider {
@@ -200,6 +398,285 @@ fn ollamaChatWithSystem(
 ) anyerror![]u8 {
     const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
     return self.chatWithSystem(allocator, system_prompt, message, model, temperature);
+}
+
+const ConvertedUserMessageContent = struct {
+    content: ?[]u8 = null,
+    images: ?[][]u8 = null,
+
+    fn deinit(self: *ConvertedUserMessageContent, allocator: std.mem.Allocator) void {
+        if (self.content) |content| allocator.free(content);
+        if (self.images) |images| {
+            for (images) |image| allocator.free(image);
+            allocator.free(images);
+        }
+        self.* = undefined;
+    }
+};
+
+const AssistantToolCallFields = struct {
+    id: []const u8,
+    name: []const u8,
+    arguments: []const u8,
+};
+
+fn convertUserMessageContent(
+    allocator: std.mem.Allocator,
+    content: []const u8,
+) !ConvertedUserMessageContent {
+    // TODO(Phase 3: multimodal image extraction): parse image markers into Ollama images.
+    return .{
+        .content = try allocator.dupe(u8, content),
+        .images = null,
+    };
+}
+
+fn convertAssistantMessage(
+    allocator: std.mem.Allocator,
+    message: dispatcher.ChatMessage,
+    tool_name_by_id: *std.StringHashMap([]u8),
+) !?types.Message {
+    var root = (try parser_types.parseJsonValueOwned(allocator, message.content)) orelse return null;
+    defer parser_types.freeJsonValue(allocator, &root);
+
+    const tool_calls_value = getObjectField(root, "tool_calls") orelse return null;
+    if (tool_calls_value != .array) return null;
+
+    var parsed_calls = std.ArrayList(AssistantToolCallFields).init(allocator);
+    defer parsed_calls.deinit();
+    for (tool_calls_value.array.items) |item| {
+        const parsed = parseAssistantToolCallFields(item) orelse return null;
+        try parsed_calls.append(parsed);
+    }
+
+    var outgoing = std.ArrayList(types.OutgoingToolCall).init(allocator);
+    errdefer {
+        for (outgoing.items) |*call| call.deinit(allocator);
+        outgoing.deinit();
+    }
+
+    for (parsed_calls.items) |parsed| {
+        var arguments = try parseToolArguments(allocator, parsed.arguments);
+        errdefer parser_types.freeJsonValue(allocator, &arguments);
+        const kind_owned = try allocator.dupe(u8, "function");
+        errdefer allocator.free(kind_owned);
+        const name_owned = try allocator.dupe(u8, parsed.name);
+        errdefer allocator.free(name_owned);
+
+        try rememberToolNameById(allocator, tool_name_by_id, parsed.id, parsed.name);
+        try outgoing.append(.{
+            .kind = kind_owned,
+            .function = .{
+                .name = name_owned,
+                .arguments = arguments,
+            },
+        });
+    }
+
+    const calls = try outgoing.toOwnedSlice();
+    errdefer {
+        for (calls) |*call| call.deinit(allocator);
+        allocator.free(calls);
+    }
+
+    const role_owned = try allocator.dupe(u8, "assistant");
+    errdefer allocator.free(role_owned);
+    const content_owned = if (getObjectString(root, "content")) |content|
+        try allocator.dupe(u8, content)
+    else
+        null;
+    errdefer if (content_owned) |content| allocator.free(content);
+
+    return .{
+        .role = role_owned,
+        .content = content_owned,
+        .images = null,
+        .tool_calls = calls,
+        .tool_name = null,
+    };
+}
+
+fn parseAssistantToolCallFields(value: std.json.Value) ?AssistantToolCallFields {
+    if (value != .object) return null;
+    const id = getObjectString(value, "id") orelse return null;
+    const name = getObjectString(value, "name") orelse return null;
+    const arguments = getObjectString(value, "arguments") orelse return null;
+    return .{ .id = id, .name = name, .arguments = arguments };
+}
+
+fn convertToolMessage(
+    allocator: std.mem.Allocator,
+    message: dispatcher.ChatMessage,
+    tool_name_by_id: *std.StringHashMap([]u8),
+) !?types.Message {
+    var root = (try parser_types.parseJsonValueOwned(allocator, message.content)) orelse return null;
+    defer parser_types.freeJsonValue(allocator, &root);
+
+    const tool_name_owned = blk: {
+        if (getObjectString(root, "tool_name")) |tool_name| {
+            break :blk try allocator.dupe(u8, tool_name);
+        }
+        if (getObjectString(root, "tool_call_id")) |id| {
+            if (tool_name_by_id.get(id)) |tool_name| {
+                break :blk try allocator.dupe(u8, tool_name);
+            }
+        }
+        break :blk null;
+    };
+    errdefer if (tool_name_owned) |tool_name| allocator.free(tool_name);
+
+    const content_owned = blk: {
+        if (getObjectString(root, "content")) |content| {
+            break :blk try allocator.dupe(u8, content);
+        }
+        if (std.mem.trim(u8, message.content, " \t\r\n").len != 0) {
+            break :blk try allocator.dupe(u8, message.content);
+        }
+        break :blk null;
+    };
+    errdefer if (content_owned) |content| allocator.free(content);
+
+    const role_owned = try allocator.dupe(u8, "tool");
+    errdefer allocator.free(role_owned);
+
+    return .{
+        .role = role_owned,
+        .content = content_owned,
+        .images = null,
+        .tool_calls = null,
+        .tool_name = tool_name_owned,
+    };
+}
+
+fn rememberToolNameById(
+    allocator: std.mem.Allocator,
+    tool_name_by_id: *std.StringHashMap([]u8),
+    id: []const u8,
+    name: []const u8,
+) !void {
+    const id_owned = try allocator.dupe(u8, id);
+    errdefer allocator.free(id_owned);
+    const name_owned = try allocator.dupe(u8, name);
+    errdefer allocator.free(name_owned);
+
+    if (tool_name_by_id.fetchRemove(id)) |old| {
+        allocator.free(old.key);
+        allocator.free(old.value);
+    }
+    try tool_name_by_id.put(id_owned, name_owned);
+}
+
+fn freeToolNameMap(
+    allocator: std.mem.Allocator,
+    tool_name_by_id: *std.StringHashMap([]u8),
+) void {
+    var iterator = tool_name_by_id.iterator();
+    while (iterator.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+        allocator.free(entry.value_ptr.*);
+    }
+    tool_name_by_id.deinit();
+}
+
+fn cloneMessages(allocator: std.mem.Allocator, messages: []const types.Message) ![]types.Message {
+    var cloned = std.ArrayList(types.Message).init(allocator);
+    errdefer {
+        for (cloned.items) |*message| message.deinit(allocator);
+        cloned.deinit();
+    }
+    for (messages) |message| {
+        try cloned.append(try cloneMessage(allocator, message));
+    }
+    return cloned.toOwnedSlice();
+}
+
+fn cloneMessage(allocator: std.mem.Allocator, message: types.Message) !types.Message {
+    const role = try allocator.dupe(u8, message.role);
+    errdefer allocator.free(role);
+    const content = if (message.content) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (content) |value| allocator.free(value);
+    const images = if (message.images) |value| try cloneImages(allocator, value) else null;
+    errdefer if (images) |value| freeImages(allocator, value);
+    const tool_calls = if (message.tool_calls) |value| try cloneOutgoingToolCalls(allocator, value) else null;
+    errdefer if (tool_calls) |value| freeOutgoingToolCalls(allocator, value);
+    const tool_name = if (message.tool_name) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (tool_name) |value| allocator.free(value);
+
+    return .{
+        .role = role,
+        .content = content,
+        .images = images,
+        .tool_calls = tool_calls,
+        .tool_name = tool_name,
+    };
+}
+
+fn cloneImages(allocator: std.mem.Allocator, images: []const []const u8) ![][]u8 {
+    const cloned = try allocator.alloc([]u8, images.len);
+    var count: usize = 0;
+    errdefer {
+        for (cloned[0..count]) |image| allocator.free(image);
+        allocator.free(cloned);
+    }
+    for (images) |image| {
+        cloned[count] = try allocator.dupe(u8, image);
+        count += 1;
+    }
+    return cloned;
+}
+
+fn cloneOutgoingToolCalls(
+    allocator: std.mem.Allocator,
+    calls: []const types.OutgoingToolCall,
+) ![]types.OutgoingToolCall {
+    const cloned = try allocator.alloc(types.OutgoingToolCall, calls.len);
+    var count: usize = 0;
+    errdefer {
+        for (cloned[0..count]) |*call| call.deinit(allocator);
+        allocator.free(cloned);
+    }
+    for (calls) |call| {
+        {
+            const kind = try allocator.dupe(u8, call.kind);
+            errdefer allocator.free(kind);
+            const name = try allocator.dupe(u8, call.function.name);
+            errdefer allocator.free(name);
+            var arguments = try parser_types.cloneJsonValue(allocator, call.function.arguments);
+            errdefer parser_types.freeJsonValue(allocator, &arguments);
+
+            cloned[count] = .{
+                .kind = kind,
+                .function = .{
+                    .name = name,
+                    .arguments = arguments,
+                },
+            };
+            count += 1;
+        }
+    }
+    return cloned;
+}
+
+fn freeMessages(allocator: std.mem.Allocator, messages: []const types.Message) void {
+    for (messages) |message| {
+        var owned = message;
+        owned.deinit(allocator);
+    }
+    allocator.free(messages);
+}
+
+fn freeImages(allocator: std.mem.Allocator, images: [][]u8) void {
+    for (images) |image| allocator.free(image);
+    allocator.free(images);
+}
+
+fn freeOutgoingToolCalls(allocator: std.mem.Allocator, calls: []types.OutgoingToolCall) void {
+    for (calls) |*call| call.deinit(allocator);
+    allocator.free(calls);
+}
+
+fn shouldUseAuth(self: *const OllamaProvider) bool {
+    return self.api_key != null and !isLocalEndpoint(self.base_url);
 }
 
 pub fn normalizeBaseUrl(allocator: std.mem.Allocator, raw_url: []const u8) ![]u8 {
@@ -493,6 +970,95 @@ pub fn apiResponseToChatResponse(
     };
 }
 
+fn apiResponseToToolChatResponse(
+    allocator: std.mem.Allocator,
+    api_response: types.ApiChatResponse,
+    model: []const u8,
+) !dispatcher.ChatResponse {
+    const usage = usageFromApiResponse(api_response);
+    const reasoning_content = if (api_response.message.thinking) |thinking|
+        try allocator.dupe(u8, thinking)
+    else
+        null;
+    errdefer if (reasoning_content) |reasoning| allocator.free(reasoning);
+
+    if (api_response.message.tool_calls.len != 0) {
+        var calls = std.ArrayList(dispatcher.ToolCall).init(allocator);
+        errdefer {
+            for (calls.items) |*call| call.deinit(allocator);
+            calls.deinit();
+        }
+        for (api_response.message.tool_calls) |tool_call| {
+            var extracted = try extractToolNameAndArgs(allocator, tool_call);
+            defer extracted.deinit(allocator);
+
+            var args = std.ArrayList(u8).init(allocator);
+            defer args.deinit();
+            try parser_json.writeCanonicalJsonValue(allocator, extracted.arguments, args.writer());
+
+            const id_owned = try allocator.dupe(u8, tool_call.id orelse "00000000-0000-4000-8000-000000000000");
+            errdefer allocator.free(id_owned);
+            const name_owned = try allocator.dupe(u8, extracted.name);
+            errdefer allocator.free(name_owned);
+            const args_owned = try args.toOwnedSlice();
+            errdefer allocator.free(args_owned);
+            try calls.append(.{
+                .id = id_owned,
+                .name = name_owned,
+                .arguments = args_owned,
+            });
+        }
+
+        const text = try effectiveContent(allocator, api_response.message.content, api_response.message.thinking);
+        errdefer if (text) |content| allocator.free(content);
+        return .{
+            .text = text,
+            .tool_calls = try calls.toOwnedSlice(),
+            .usage = usage,
+            .reasoning_content = reasoning_content,
+            .owned = true,
+        };
+    }
+
+    const text = if (try effectiveContent(allocator, api_response.message.content, api_response.message.thinking)) |content|
+        content
+    else
+        try fallbackTextForEmptyContent(allocator, model, api_response.message.thinking);
+    errdefer allocator.free(text);
+
+    return .{
+        .text = text,
+        .tool_calls = &.{},
+        .usage = usage,
+        .reasoning_content = reasoning_content,
+        .owned = true,
+    };
+}
+
+fn usageFromApiResponse(api_response: types.ApiChatResponse) ?dispatcher.TokenUsage {
+    return if (api_response.prompt_eval_count != null or api_response.eval_count != null)
+        .{
+            .input_tokens = api_response.prompt_eval_count,
+            .output_tokens = api_response.eval_count,
+            .cached_input_tokens = null,
+        }
+    else
+        null;
+}
+
+pub fn writeMessagesJson(
+    allocator: std.mem.Allocator,
+    messages: []const types.Message,
+    writer: anytype,
+) !void {
+    try writer.writeByte('[');
+    for (messages, 0..) |message, i| {
+        if (i != 0) try writer.writeByte(',');
+        try writeMessageJson(allocator, message, writer);
+    }
+    try writer.writeByte(']');
+}
+
 pub fn writeChatRequestJson(
     allocator: std.mem.Allocator,
     request: types.ChatRequest,
@@ -500,12 +1066,9 @@ pub fn writeChatRequestJson(
 ) !void {
     try writer.writeAll("{\"model\":");
     try std.json.stringify(request.model, .{}, writer);
-    try writer.writeAll(",\"messages\":[");
-    for (request.messages, 0..) |message, i| {
-        if (i != 0) try writer.writeByte(',');
-        try writeMessageJson(allocator, message, writer);
-    }
-    try writer.writeAll("],\"stream\":false,\"options\":{\"temperature\":");
+    try writer.writeAll(",\"messages\":");
+    try writeMessagesJson(allocator, request.messages, writer);
+    try writer.writeAll(",\"stream\":false,\"options\":{\"temperature\":");
     try std.json.stringify(request.options.temperature, .{}, writer);
     try writer.writeByte('}');
     if (request.think) |think| {
@@ -663,4 +1226,52 @@ test "provider() handle aliases the concrete OllamaProvider" {
     const handle = concrete.provider();
     try std.testing.expectEqual(@intFromPtr(&concrete), @intFromPtr(handle.ptr));
     try std.testing.expect(handle.vtable.chatWithSystem == ollamaChatWithSystem);
+}
+
+test "convertMessages extracts assistant tool calls" {
+    var provider = try OllamaProvider.new(std.testing.allocator, null, null);
+    defer provider.deinit(std.testing.allocator);
+
+    const history = [_]dispatcher.ChatMessage{.{
+        .role = "assistant",
+        .content = "{\"content\":\"checking\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"pwd\\\"}\"}]}",
+    }};
+
+    const converted = try provider.convertMessages(std.testing.allocator, &history);
+    defer freeMessages(std.testing.allocator, converted);
+
+    try std.testing.expectEqual(@as(usize, 1), converted.len);
+    try std.testing.expectEqualStrings("assistant", converted[0].role);
+    try std.testing.expectEqualStrings("checking", converted[0].content.?);
+    try std.testing.expectEqual(@as(usize, 1), converted[0].tool_calls.?.len);
+    try std.testing.expectEqualStrings("function", converted[0].tool_calls.?[0].kind);
+    try std.testing.expectEqualStrings("shell", converted[0].tool_calls.?[0].function.name);
+    try std.testing.expectEqualStrings(
+        "pwd",
+        converted[0].tool_calls.?[0].function.arguments.object.get("command").?.string,
+    );
+}
+
+test "convertMessages resolves tool role name by assistant id" {
+    var provider = try OllamaProvider.new(std.testing.allocator, null, null);
+    defer provider.deinit(std.testing.allocator);
+
+    const history = [_]dispatcher.ChatMessage{
+        .{
+            .role = "assistant",
+            .content = "{\"content\":\"\",\"tool_calls\":[{\"id\":\"call_shell\",\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"pwd\\\"}\"}]}",
+        },
+        .{
+            .role = "tool",
+            .content = "{\"tool_call_id\":\"call_shell\",\"content\":\"/tmp/project\"}",
+        },
+    };
+
+    const converted = try provider.convertMessages(std.testing.allocator, &history);
+    defer freeMessages(std.testing.allocator, converted);
+
+    try std.testing.expectEqual(@as(usize, 2), converted.len);
+    try std.testing.expectEqualStrings("tool", converted[1].role);
+    try std.testing.expectEqualStrings("/tmp/project", converted[1].content.?);
+    try std.testing.expectEqualStrings("shell", converted[1].tool_name.?);
 }

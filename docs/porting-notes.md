@@ -564,3 +564,29 @@ No source changes this commit — plan only.
 - Verification: `zig build`; `zig build test` (32/32); `cargo build --manifest-path eval-tools/Cargo.toml --release`; `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored — unchanged); `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (102/102 — unchanged).
 - Phase 2 deferrals confirmed unchanged: capability getters (`default_temperature`, `default_max_tokens`, `default_timeout_secs`, `default_base_url`, `default_wire_api`, `capabilities`, `supports_native_tools`/`supports_vision`/`supports_streaming`), additional chat methods (`simple_chat`, `chat_with_history`, `chat`, `chat_with_tools`), `list_models`, `warmup`, `convert_tools`, registry/factory, async-aware vtable shape (likely needed once libxev enters).
 - Open notes for review: the file-private vtable consts live below their owning struct decl in each client.zig — not at module top — to keep the existing struct surface visually intact. If a future refactor moves them, watch for circular `@import("../provider.zig")` ordering (the vtable type only depends on `std`, so re-import position is unconstrained today).
+
+---
+
+## 2026-05-06 — Ollama provider Phase 2A first-pass (Codex)
+
+- Ported the concrete Phase 2A Ollama chat surface in `zig/src/providers/ollama/client.zig`: `convertMessages`, `chatWithHistory`, `chatWithTools`, structured `chat`, synchronous `sendRequest` / `sendRequestInner`, and retry-on-`think=true` failure. The vtable remains unchanged; this is concrete-method only per D9's second-consumer rule.
+- `convertMessages` now mirrors Rust's native Ollama message conversion: assistant JSON `tool_calls` become outgoing `tool_calls` with `type="function"` and parsed arguments via `parseToolArguments`; assistant calls seed `tool_name_by_id`; tool-role messages prefer explicit `tool_name`, then `tool_call_id` lookup, then raw parsed content fallback; user messages go through a Phase 3 multimodal TODO stub that returns unchanged content and no images.
+- `chatWithHistory` converts history, sends no tools, and returns formatted tool-call loop JSON or effective/fallback text. `chatWithTools` passes raw preformatted tool JSON through, returns owned `dispatcher.ChatResponse`, populates native tool calls, and preserves `thinking` as `reasoning_content`.
+- `chat` uses a small concrete `ProviderChatRequest` (`messages` plus optional raw tool JSON) and routes to `chatWithTools` when tools are present and `supportsNativeTools()` is true, otherwise `chatWithHistory`. No `Provider.VTable` extension, registry, or capability getter was added.
+- Rust-side visibility widened only in `rust/crates/zeroclaw-providers/src/ollama.rs`: `ChatMessage` is re-exported from the `ollama` module for eval reach and `convert_messages` is now `pub`. No Rust behavior logic was added.
+- Eval harness additions:
+  - Rust and Zig `eval-providers` gained Ollama ops `convert_messages`, `chat_with_history_request`, and `chat_request`.
+  - Added five scenarios under `evals/fixtures/providers/ollama/`: assistant tool-call extraction, tool-role id lookup, explicit tool-name precedence, multi-turn history request build, and structured chat request with tools.
+  - Full fixture count is now 107/107 (86 parser + 3 memory + 3 dispatcher + 10 Ollama provider + 5 OpenAI provider).
+- Pinned quirks preserved:
+  - Tool argument strings still use `parseToolArguments`, with parse failure returning `{}`.
+  - `tool_name_by_id` is populated only by parseable assistant `tool_calls` payloads and only affects later tool messages in the same conversion pass.
+  - Tool content priority is `value.content` string, then non-empty raw tool message content, then null; there is no empty-string default for parsed tool messages.
+  - User multimodal image extraction is intentionally stubbed for Phase 2A with a TODO pointing at Phase 3.
+  - Retry-on-think-failure only activates when `reasoning_enabled == Some(true)` / `true`; if both attempts fail, Zig returns the first error tag.
+- Phase 2B/3 deferrals confirmed unchanged: `list_models`, `warmup`, standalone `convert_tools`, real multimodal extraction, `:cloud` routing, capability getters / vtable extension, OpenAI Phase 2, mock HTTP fixture infrastructure, OAuth, agent loop, and provider benches.
+- Verification: `cd zig && zig build` (clean); `cd zig && zig build test --summary all` (34/34 tests passed); `cargo build --manifest-path eval-tools/Cargo.toml --release` (release build finished); `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored); `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (all fixtures OK, 107 inputs).
+- Zig 0.14.1 notes: the eval runner cannot import `tool_call_parser/types.zig` directly while also importing the public `zeroclaw` module without tripping "file exists in multiple modules", so it keeps a tiny local JSON clone/free helper for fixture-owned `std.json.Value` copies. Error-set retries preserve the original error tag, not Rust's richer `anyhow` context.
+- Open questions for Claude review:
+  - The structured `chat_request` eval uses raw preformatted tool JSON to keep standalone `convert_tools` deferred; confirm this is the desired Phase 2A boundary before OpenAI Phase 2 lands.
+  - Rust's current trait capability method still returns prompt-guided/native-tools false for Ollama, while this concrete Zig `chat` path follows the Phase 2A instruction to route native tools when tools are present. Confirm whether the later capability/vtable phase should keep or revise that Rust behavior.

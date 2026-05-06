@@ -10,7 +10,6 @@ const ollama_types = ollama.types;
 const openai = zeroclaw.providers.openai;
 const openai_types = openai.types;
 const dispatcher = zeroclaw.runtime.agent.dispatcher;
-const parser_types = @import("../tool_call_parser/types.zig");
 
 const EvalError = error{InvalidScenario};
 
@@ -67,6 +66,12 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
         try writeStringResult(writer, op, result);
     } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "build_chat_request")) {
         try runOllamaBuildChatRequest(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "convert_messages")) {
+        try runOllamaConvertMessages(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "chat_with_history_request")) {
+        try runOllamaHistoryRequest(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "chat_request")) {
+        try runOllamaChatRequest(allocator, parsed.value, writer);
     } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "build_chat_request")) {
         try runOpenAiBuildChatRequest(allocator, parsed.value, writer);
     } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "parse_chat_response")) {
@@ -140,6 +145,80 @@ fn runOllamaBuildChatRequest(allocator: std.mem.Allocator, op_value: std.json.Va
     try writer.writeAll("}\n");
 }
 
+fn runOllamaConvertMessages(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
+    const messages = try chatMessagesFromField(allocator, op_value, "messages");
+    defer freeChatMessages(allocator, messages);
+
+    var provider = try ollama.OllamaProvider.new(allocator, null, null);
+    defer provider.deinit(allocator);
+
+    const converted = try provider.convertMessages(allocator, messages);
+    defer freeOllamaMessages(allocator, converted);
+
+    try writer.writeAll("{\"op\":\"convert_messages\",\"result\":");
+    try ollama.client.writeMessagesJson(allocator, converted, writer);
+    try writer.writeAll("}\n");
+}
+
+fn runOllamaHistoryRequest(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
+    const model = getString(op_value, "model") orelse return EvalError.InvalidScenario;
+    const temperature = getF64(op_value, "temperature") orelse return EvalError.InvalidScenario;
+    const messages = try chatMessagesFromField(allocator, op_value, "messages");
+    defer freeChatMessages(allocator, messages);
+    const tools = optionalTools(op_value);
+
+    var provider = try ollama.OllamaProvider.new(allocator, null, null);
+    defer provider.deinit(allocator);
+
+    const converted = try provider.convertMessages(allocator, messages);
+    defer freeOllamaMessages(allocator, converted);
+
+    var request = try provider.buildChatRequestWithThink(
+        allocator,
+        try cloneOllamaMessages(allocator, converted),
+        model,
+        temperature,
+        tools,
+        null,
+    );
+    defer request.deinit(allocator);
+
+    try writer.writeAll("{\"op\":\"chat_with_history_request\",\"result\":");
+    try ollama.client.writeChatRequestJson(allocator, request, writer);
+    try writer.writeAll("}\n");
+}
+
+fn runOllamaChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
+    const model = getString(op_value, "model") orelse return EvalError.InvalidScenario;
+    const temperature = getF64(op_value, "temperature") orelse return EvalError.InvalidScenario;
+    const request_value = getField(op_value, "request") orelse return EvalError.InvalidScenario;
+    if (request_value != .object) return EvalError.InvalidScenario;
+
+    const messages = try chatMessagesFromField(allocator, request_value, "messages");
+    defer freeChatMessages(allocator, messages);
+    const tools = optionalTools(request_value);
+
+    var provider = try ollama.OllamaProvider.new(allocator, null, null);
+    defer provider.deinit(allocator);
+
+    const converted = try provider.convertMessages(allocator, messages);
+    defer freeOllamaMessages(allocator, converted);
+
+    var request = try provider.buildChatRequestWithThink(
+        allocator,
+        try cloneOllamaMessages(allocator, converted),
+        model,
+        temperature,
+        tools,
+        null,
+    );
+    defer request.deinit(allocator);
+
+    try writer.writeAll("{\"op\":\"chat_request\",\"result\":");
+    try ollama.client.writeChatRequestJson(allocator, request, writer);
+    try writer.writeAll("}\n");
+}
+
 fn runOpenAiBuildChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
     const model = getString(op_value, "model") orelse return EvalError.InvalidScenario;
     const system = getOptionalString(op_value, "system");
@@ -173,6 +252,203 @@ fn runOpenAiBuildChatRequest(allocator: std.mem.Allocator, op_value: std.json.Va
     try writer.writeAll("}\n");
 }
 
+fn chatMessagesFromField(
+    allocator: std.mem.Allocator,
+    value: std.json.Value,
+    key: []const u8,
+) ![]dispatcher.ChatMessage {
+    const messages_value = getField(value, key) orelse return EvalError.InvalidScenario;
+    if (messages_value != .array) return EvalError.InvalidScenario;
+
+    var messages = std.ArrayList(dispatcher.ChatMessage).init(allocator);
+    errdefer {
+        for (messages.items) |*message| message.deinit(allocator);
+        messages.deinit();
+    }
+
+    for (messages_value.array.items) |message_value| {
+        if (message_value != .object) return EvalError.InvalidScenario;
+        const role = getStringValue(message_value, "role") orelse return EvalError.InvalidScenario;
+        const content = getStringValue(message_value, "content") orelse return EvalError.InvalidScenario;
+        try messages.append(.{
+            .role = try allocator.dupe(u8, role),
+            .content = try allocator.dupe(u8, content),
+        });
+    }
+
+    return messages.toOwnedSlice();
+}
+
+fn freeChatMessages(allocator: std.mem.Allocator, messages: []dispatcher.ChatMessage) void {
+    for (messages) |*message| message.deinit(allocator);
+    allocator.free(messages);
+}
+
+fn optionalTools(value: std.json.Value) ?[]const std.json.Value {
+    const tools_value = getField(value, "tools") orelse return null;
+    if (tools_value == .null) return null;
+    if (tools_value != .array or tools_value.array.items.len == 0) return null;
+    return tools_value.array.items;
+}
+
+fn cloneOllamaMessages(allocator: std.mem.Allocator, messages: []const ollama_types.Message) ![]ollama_types.Message {
+    const cloned = try allocator.alloc(ollama_types.Message, messages.len);
+    var count: usize = 0;
+    errdefer {
+        for (cloned[0..count]) |*message| message.deinit(allocator);
+        allocator.free(cloned);
+    }
+
+    for (messages) |message| {
+        cloned[count] = try cloneOllamaMessage(allocator, message);
+        count += 1;
+    }
+    return cloned;
+}
+
+fn cloneOllamaMessage(allocator: std.mem.Allocator, message: ollama_types.Message) !ollama_types.Message {
+    const role = try allocator.dupe(u8, message.role);
+    errdefer allocator.free(role);
+    const content = if (message.content) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (content) |value| allocator.free(value);
+    const images = if (message.images) |value| try cloneImages(allocator, value) else null;
+    errdefer if (images) |value| freeImages(allocator, value);
+    const tool_calls = if (message.tool_calls) |value| try cloneOutgoingToolCalls(allocator, value) else null;
+    errdefer if (tool_calls) |value| freeOutgoingToolCalls(allocator, value);
+    const tool_name = if (message.tool_name) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (tool_name) |value| allocator.free(value);
+
+    return .{
+        .role = role,
+        .content = content,
+        .images = images,
+        .tool_calls = tool_calls,
+        .tool_name = tool_name,
+    };
+}
+
+fn cloneImages(allocator: std.mem.Allocator, images: []const []const u8) ![][]u8 {
+    const cloned = try allocator.alloc([]u8, images.len);
+    var count: usize = 0;
+    errdefer {
+        for (cloned[0..count]) |image| allocator.free(image);
+        allocator.free(cloned);
+    }
+    for (images) |image| {
+        cloned[count] = try allocator.dupe(u8, image);
+        count += 1;
+    }
+    return cloned;
+}
+
+fn cloneOutgoingToolCalls(
+    allocator: std.mem.Allocator,
+    calls: []const ollama_types.OutgoingToolCall,
+) ![]ollama_types.OutgoingToolCall {
+    const cloned = try allocator.alloc(ollama_types.OutgoingToolCall, calls.len);
+    var count: usize = 0;
+    errdefer {
+        for (cloned[0..count]) |*call| call.deinit(allocator);
+        allocator.free(cloned);
+    }
+    for (calls) |call| {
+        {
+            const kind = try allocator.dupe(u8, call.kind);
+            errdefer allocator.free(kind);
+            const name = try allocator.dupe(u8, call.function.name);
+            errdefer allocator.free(name);
+            var arguments = try cloneJsonValue(allocator, call.function.arguments);
+            errdefer freeJsonValue(allocator, &arguments);
+
+            cloned[count] = .{
+                .kind = kind,
+                .function = .{
+                    .name = name,
+                    .arguments = arguments,
+                },
+            };
+            count += 1;
+        }
+    }
+    return cloned;
+}
+
+fn freeOllamaMessages(allocator: std.mem.Allocator, messages: []ollama_types.Message) void {
+    for (messages) |*message| message.deinit(allocator);
+    allocator.free(messages);
+}
+
+fn freeImages(allocator: std.mem.Allocator, images: [][]u8) void {
+    for (images) |image| allocator.free(image);
+    allocator.free(images);
+}
+
+fn freeOutgoingToolCalls(allocator: std.mem.Allocator, calls: []ollama_types.OutgoingToolCall) void {
+    for (calls) |*call| call.deinit(allocator);
+    allocator.free(calls);
+}
+
+fn emptyObject(allocator: std.mem.Allocator) std.json.Value {
+    return .{ .object = std.json.ObjectMap.init(allocator) };
+}
+
+fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Value {
+    return switch (value) {
+        .null => .null,
+        .bool => |inner| .{ .bool = inner },
+        .integer => |inner| .{ .integer = inner },
+        .float => |inner| .{ .float = inner },
+        .number_string => |inner| .{ .number_string = try allocator.dupe(u8, inner) },
+        .string => |inner| .{ .string = try allocator.dupe(u8, inner) },
+        .array => |array| blk: {
+            var cloned = std.json.Array.init(allocator);
+            errdefer {
+                var tmp = std.json.Value{ .array = cloned };
+                freeJsonValue(allocator, &tmp);
+            }
+            for (array.items) |item| {
+                try cloned.append(try cloneJsonValue(allocator, item));
+            }
+            break :blk .{ .array = cloned };
+        },
+        .object => |object| blk: {
+            var cloned = std.json.ObjectMap.init(allocator);
+            errdefer {
+                var tmp = std.json.Value{ .object = cloned };
+                freeJsonValue(allocator, &tmp);
+            }
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                try cloned.put(
+                    try allocator.dupe(u8, entry.key_ptr.*),
+                    try cloneJsonValue(allocator, entry.value_ptr.*),
+                );
+            }
+            break :blk .{ .object = cloned };
+        },
+    };
+}
+
+fn freeJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {
+    switch (value.*) {
+        .null, .bool, .integer, .float => {},
+        .number_string => |inner| allocator.free(inner),
+        .string => |inner| allocator.free(inner),
+        .array => |*array| {
+            for (array.items) |*item| freeJsonValue(allocator, item);
+            array.deinit();
+        },
+        .object => |*object| {
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                freeJsonValue(allocator, entry.value_ptr);
+            }
+            object.deinit();
+        },
+    }
+}
+
 fn toolCallsFromOp(allocator: std.mem.Allocator, op_value: std.json.Value) ![]ollama_types.OllamaToolCall {
     const calls_value = getField(op_value, "tool_calls") orelse return EvalError.InvalidScenario;
     if (calls_value != .array) return EvalError.InvalidScenario;
@@ -188,10 +464,10 @@ fn toolCallsFromOp(allocator: std.mem.Allocator, op_value: std.json.Value) ![]ol
         const name = getStringValue(entry, "name") orelse return EvalError.InvalidScenario;
         {
             var arguments = if (getField(entry, "arguments")) |value|
-                try parser_types.cloneJsonValue(allocator, value)
+                try cloneJsonValue(allocator, value)
             else
-                parser_types.emptyObject(allocator);
-            errdefer parser_types.freeJsonValue(allocator, &arguments);
+                emptyObject(allocator);
+            errdefer freeJsonValue(allocator, &arguments);
             const id = if (getField(entry, "id")) |id_value| blk: {
                 if (id_value == .string) break :blk try allocator.dupe(u8, id_value.string);
                 break :blk null;

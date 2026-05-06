@@ -1,0 +1,1 @@
+{"op":"convert_messages","result":[{"content":"","role":"assistant","tool_calls":[{"function":{"arguments":{"command":"pwd"},"name":"shell"},"type":"function"}]},{"content":"/tmp/project","role":"tool","tool_name":"shell"}]}

@@ -1,0 +1,1 @@
+{"provider":"ollama","op":"convert_messages","messages":[{"role":"assistant","content":"{\"content\":\"I'll call a tool\",\"tool_calls\":[{\"id\":\"call_weather\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\",\\\"units\\\":\\\"metric\\\"}\"}]}"}]}

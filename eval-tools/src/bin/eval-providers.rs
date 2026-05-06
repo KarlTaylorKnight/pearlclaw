@@ -8,7 +8,8 @@ use std::io::{self, Read, Write};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use zeroclaw_providers::ollama::{
-    Message as OllamaMessage, OllamaFunction, OllamaProvider, OllamaToolCall,
+    ChatMessage as OllamaChatMessage, Message as OllamaMessage, OllamaFunction, OllamaProvider,
+    OllamaToolCall,
 };
 use zeroclaw_providers::openai::{
     ChatRequest as OpenAiChatRequest, Message as OpenAiMessage, OpenAiProvider,
@@ -86,6 +87,18 @@ fn main() -> Result<()> {
             }
             ("ollama", "build_chat_request") => {
                 let result = run_ollama_build_chat_request(&op_value)?;
+                write_result(&mut output, op, result);
+            }
+            ("ollama", "convert_messages") => {
+                let result = run_ollama_convert_messages(&op_value)?;
+                write_result(&mut output, op, result);
+            }
+            ("ollama", "chat_with_history_request") => {
+                let result = run_ollama_history_request(&op_value)?;
+                write_result(&mut output, op, result);
+            }
+            ("ollama", "chat_request") => {
+                let result = run_ollama_chat_request(&op_value)?;
                 write_result(&mut output, op, result);
             }
             ("openai", "build_chat_request") => {
@@ -182,8 +195,72 @@ fn run_ollama_build_chat_request(op: &Value) -> Result<Value> {
     });
 
     let provider = OllamaProvider::new(None, None);
-    let request =
-        provider.build_chat_request_with_think(messages, model, temperature, tools.as_deref(), think);
+    let request = provider.build_chat_request_with_think(
+        messages,
+        model,
+        temperature,
+        tools.as_deref(),
+        think,
+    );
+    Ok(serde_json::to_value(request)?)
+}
+
+fn run_ollama_convert_messages(op: &Value) -> Result<Value> {
+    let messages = chat_messages_from_value(op.get("messages").context("messages missing")?)?;
+    let provider = OllamaProvider::new(None, None);
+    Ok(serde_json::to_value(provider.convert_messages(&messages))?)
+}
+
+fn run_ollama_history_request(op: &Value) -> Result<Value> {
+    let model = op
+        .get("model")
+        .and_then(Value::as_str)
+        .context("model missing")?;
+    let temperature = op
+        .get("temperature")
+        .and_then(Value::as_f64)
+        .context("temperature missing")?;
+    let messages = chat_messages_from_value(op.get("messages").context("messages missing")?)?;
+    let tools = optional_tools(op.get("tools"))?;
+
+    let provider = OllamaProvider::new(None, None);
+    let api_messages = provider.convert_messages(&messages);
+    let request = provider.build_chat_request_with_think(
+        api_messages,
+        model,
+        temperature,
+        tools.as_deref(),
+        None,
+    );
+    Ok(serde_json::to_value(request)?)
+}
+
+fn run_ollama_chat_request(op: &Value) -> Result<Value> {
+    let model = op
+        .get("model")
+        .and_then(Value::as_str)
+        .context("model missing")?;
+    let temperature = op
+        .get("temperature")
+        .and_then(Value::as_f64)
+        .context("temperature missing")?;
+    let request_value = op.get("request").context("request missing")?;
+    let messages = chat_messages_from_value(
+        request_value
+            .get("messages")
+            .context("request.messages missing")?,
+    )?;
+    let tools = optional_tools(request_value.get("tools"))?;
+
+    let provider = OllamaProvider::new(None, None);
+    let api_messages = provider.convert_messages(&messages);
+    let request = provider.build_chat_request_with_think(
+        api_messages,
+        model,
+        temperature,
+        tools.as_deref(),
+        None,
+    );
     Ok(serde_json::to_value(request)?)
 }
 
@@ -230,6 +307,19 @@ fn run_openai_build_chat_request(op: &Value) -> Result<Value> {
         max_tokens,
     };
     Ok(serde_json::to_value(request)?)
+}
+
+fn chat_messages_from_value(value: &Value) -> Result<Vec<OllamaChatMessage>> {
+    Ok(serde_json::from_value(value.clone())?)
+}
+
+fn optional_tools(value: Option<&Value>) -> Result<Option<Vec<Value>>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) if items.is_empty() => Ok(None),
+        Some(Value::Array(items)) => Ok(Some(items.clone())),
+        Some(_) => anyhow::bail!("tools must be array or null"),
+    }
 }
 
 fn tool_calls_from_json(op: &Value) -> Result<Vec<OllamaToolCall>> {

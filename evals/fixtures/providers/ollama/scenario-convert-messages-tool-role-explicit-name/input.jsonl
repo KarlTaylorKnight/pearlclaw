@@ -1,0 +1,1 @@
+{"provider":"ollama","op":"convert_messages","messages":[{"role":"assistant","content":"{\"content\":\"\",\"tool_calls\":[{\"id\":\"call_lookup\",\"name\":\"lookup\",\"arguments\":\"{\\\"key\\\":\\\"alpha\\\"}\"}]}"},{"role":"tool","content":"{\"tool_call_id\":\"call_lookup\",\"tool_name\":\"manual_name\",\"content\":\"done\"}"}]}

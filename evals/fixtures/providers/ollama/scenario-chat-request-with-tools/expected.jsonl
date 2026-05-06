@@ -1,0 +1,1 @@
+{"op":"chat_request","result":{"messages":[{"content":"Search the docs for retries.","role":"user"}],"model":"qwen2.5","options":{"temperature":0.2},"stream":false,"tools":[{"function":{"description":"Search local documentation","name":"search_docs","parameters":{"properties":{"query":{"type":"string"}},"required":["query"],"type":"object"}},"type":"function"}]}}

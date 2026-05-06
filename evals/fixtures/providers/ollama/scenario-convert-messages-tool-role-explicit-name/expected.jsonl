@@ -1,0 +1,1 @@
+{"op":"convert_messages","result":[{"content":"","role":"assistant","tool_calls":[{"function":{"arguments":{"key":"alpha"},"name":"lookup"},"type":"function"}]},{"content":"done","role":"tool","tool_name":"manual_name"}]}

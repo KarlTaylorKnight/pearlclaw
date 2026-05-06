@@ -1,7 +1,6 @@
 use crate::multimodal;
-use crate::traits::{
-    ChatMessage, ChatResponse, Provider, ProviderCapabilities, TokenUsage, ToolCall,
-};
+pub use crate::traits::ChatMessage;
+use crate::traits::{ChatResponse, Provider, ProviderCapabilities, TokenUsage, ToolCall};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -349,7 +348,7 @@ impl OllamaProvider {
     /// `run_tool_call_loop` stores native assistant/tool entries as JSON strings in
     /// `ChatMessage.content`. We decode those payloads here so follow-up requests send
     /// structured `assistant.tool_calls` and `tool.tool_name`, as expected by Ollama.
-    fn convert_messages(&self, messages: &[ChatMessage]) -> Vec<Message> {
+    pub fn convert_messages(&self, messages: &[ChatMessage]) -> Vec<Message> {
         let mut tool_name_by_id: HashMap<String, String> = HashMap::new();
 
         messages

@@ -1,0 +1,1 @@
+{"op":"convert_messages","result":[{"content":"I'll call a tool","role":"assistant","tool_calls":[{"function":{"arguments":{"city":"Paris","units":"metric"},"name":"get_weather"},"type":"function"}]}]}
