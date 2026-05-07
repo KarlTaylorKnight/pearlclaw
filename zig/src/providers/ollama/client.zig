@@ -7,10 +7,7 @@ const dispatcher = @import("../../runtime/agent/dispatcher.zig");
 pub const BASE_URL = "http://localhost:11434";
 pub const TEMPERATURE_DEFAULT: f64 = 0.8;
 
-pub const ProviderChatRequest = struct {
-    messages: []const dispatcher.ChatMessage,
-    tools: ?[]const std.json.Value = null,
-};
+pub const ProviderChatRequest = @import("../provider.zig").ChatRequest;
 
 pub const OllamaProvider = struct {
     base_url: []u8,
@@ -386,6 +383,9 @@ const provider_handle = @import("../provider.zig");
 
 const ollama_vtable: provider_handle.Provider.VTable = .{
     .chatWithSystem = ollamaChatWithSystem,
+    .chatWithHistory = ollamaChatWithHistory,
+    .chatWithTools = ollamaChatWithTools,
+    .chat = ollamaChat,
     .capabilities = .{
         .default_temperature = TEMPERATURE_DEFAULT,
         .default_timeout_secs = 600,
@@ -405,6 +405,40 @@ fn ollamaChatWithSystem(
 ) anyerror![]u8 {
     const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
     return self.chatWithSystem(allocator, system_prompt, message, model, temperature);
+}
+
+fn ollamaChatWithHistory(
+    ptr: *anyopaque,
+    allocator: std.mem.Allocator,
+    messages: []const dispatcher.ChatMessage,
+    model: []const u8,
+    temperature: ?f64,
+) anyerror![]u8 {
+    const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
+    return self.chatWithHistory(allocator, messages, model, temperature);
+}
+
+fn ollamaChatWithTools(
+    ptr: *anyopaque,
+    allocator: std.mem.Allocator,
+    messages: []const dispatcher.ChatMessage,
+    tools: []const std.json.Value,
+    model: []const u8,
+    temperature: ?f64,
+) anyerror!dispatcher.ChatResponse {
+    const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
+    return self.chatWithTools(allocator, messages, tools, model, temperature);
+}
+
+fn ollamaChat(
+    ptr: *anyopaque,
+    allocator: std.mem.Allocator,
+    request: provider_handle.ChatRequest,
+    model: []const u8,
+    temperature: ?f64,
+) anyerror!dispatcher.ChatResponse {
+    const self: *OllamaProvider = @ptrCast(@alignCast(ptr));
+    return self.chat(allocator, request, model, temperature);
 }
 
 const ConvertedUserMessageContent = struct {

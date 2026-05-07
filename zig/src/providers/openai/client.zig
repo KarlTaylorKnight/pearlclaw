@@ -8,11 +8,7 @@ pub const BASE_URL = "https://api.openai.com/v1";
 pub const TEMPERATURE_DEFAULT: f64 = 0.8;
 const MISSING_TOOL_CALL_ID = "00000000-0000-4000-8000-000000000000";
 
-pub const ProviderChatRequest = struct {
-    messages: []const dispatcher.ChatMessage,
-    tools: ?[]const std.json.Value = null,
-    tool_choice: ?[]const u8 = null,
-};
+pub const ProviderChatRequest = @import("../provider.zig").ChatRequest;
 
 pub const OpenAiProvider = struct {
     base_url: []u8,
@@ -225,6 +221,21 @@ pub const OpenAiProvider = struct {
         return self.chatWithToolsWithChoice(allocator, messages, tools, null, model, temperature);
     }
 
+    /// Mirrors Rust's `chat_with_history` trait default for OpenAI: pluck
+    /// the first system message and the last user message, delegate to
+    /// `chatWithSystem`. Used by `chat()` and the polymorphic vtable.
+    pub fn chatWithHistory(
+        self: *const OpenAiProvider,
+        allocator: std.mem.Allocator,
+        messages: []const dispatcher.ChatMessage,
+        model: []const u8,
+        temperature: ?f64,
+    ) ![]u8 {
+        const system_prompt = findFirstMessageContent(messages, "system");
+        const user_message = findLastMessageContent(messages, "user") orelse "";
+        return self.chatWithSystem(allocator, system_prompt, user_message, model, temperature);
+    }
+
     pub fn chat(
         self: *const OpenAiProvider,
         allocator: std.mem.Allocator,
@@ -245,22 +256,8 @@ pub const OpenAiProvider = struct {
             }
         }
 
-        var native_request = try self.buildNativeChatRequest(
-            allocator,
-            request.messages,
-            null,
-            request.tool_choice,
-            model,
-            temperature orelse TEMPERATURE_DEFAULT,
-            self.max_tokens,
-        );
-        defer native_request.deinit(allocator);
-
-        const system_prompt = findFirstMessageContent(request.messages, "system");
-        const user_message = findLastMessageContent(request.messages, "user") orelse "";
-        const text = try self.chatWithSystem(allocator, system_prompt, user_message, model, temperature);
+        const text = try self.chatWithHistory(allocator, request.messages, model, temperature);
         errdefer allocator.free(text);
-
         return .{
             .text = text,
             .tool_calls = &.{},
@@ -345,6 +342,9 @@ const provider_handle = @import("../provider.zig");
 
 const openai_vtable: provider_handle.Provider.VTable = .{
     .chatWithSystem = openAiChatWithSystem,
+    .chatWithHistory = openAiChatWithHistory,
+    .chatWithTools = openAiChatWithTools,
+    .chat = openAiChat,
     .capabilities = .{
         .default_base_url = BASE_URL,
         .supports_native_tools = true,
@@ -361,6 +361,40 @@ fn openAiChatWithSystem(
 ) anyerror![]u8 {
     const self: *OpenAiProvider = @ptrCast(@alignCast(ptr));
     return self.chatWithSystem(allocator, system_prompt, message, model, temperature);
+}
+
+fn openAiChatWithHistory(
+    ptr: *anyopaque,
+    allocator: std.mem.Allocator,
+    messages: []const dispatcher.ChatMessage,
+    model: []const u8,
+    temperature: ?f64,
+) anyerror![]u8 {
+    const self: *OpenAiProvider = @ptrCast(@alignCast(ptr));
+    return self.chatWithHistory(allocator, messages, model, temperature);
+}
+
+fn openAiChatWithTools(
+    ptr: *anyopaque,
+    allocator: std.mem.Allocator,
+    messages: []const dispatcher.ChatMessage,
+    tools: []const std.json.Value,
+    model: []const u8,
+    temperature: ?f64,
+) anyerror!dispatcher.ChatResponse {
+    const self: *OpenAiProvider = @ptrCast(@alignCast(ptr));
+    return self.chatWithTools(allocator, messages, tools, model, temperature);
+}
+
+fn openAiChat(
+    ptr: *anyopaque,
+    allocator: std.mem.Allocator,
+    request: provider_handle.ChatRequest,
+    model: []const u8,
+    temperature: ?f64,
+) anyerror!dispatcher.ChatResponse {
+    const self: *OpenAiProvider = @ptrCast(@alignCast(ptr));
+    return self.chat(allocator, request, model, temperature);
 }
 
 const AssistantToolCallFields = struct {

@@ -15,6 +15,7 @@
 //! ToolDispatcher.
 
 const std = @import("std");
+const dispatcher = @import("../runtime/agent/dispatcher.zig");
 
 pub const BASELINE_TEMPERATURE: f64 = 0.7;
 pub const BASELINE_MAX_TOKENS: u32 = 4096;
@@ -35,6 +36,16 @@ pub const Capabilities = struct {
     supports_streaming: bool = false,
 };
 
+/// Polymorphic chat-request envelope used by `Provider.chat`. Mirrors the
+/// `zeroclaw_api::provider::ChatRequest` shape, with `tool_choice` exposed
+/// for providers that need it (OpenAI). Providers that don't honor a field
+/// (e.g., Ollama ignores `tool_choice`) silently drop it.
+pub const ChatRequest = struct {
+    messages: []const dispatcher.ChatMessage,
+    tools: ?[]const std.json.Value = null,
+    tool_choice: ?[]const u8 = null,
+};
+
 pub const Provider = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -48,6 +59,28 @@ pub const Provider = struct {
             model: []const u8,
             temperature: ?f64,
         ) anyerror![]u8,
+        chatWithHistory: *const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            messages: []const dispatcher.ChatMessage,
+            model: []const u8,
+            temperature: ?f64,
+        ) anyerror![]u8,
+        chatWithTools: *const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            messages: []const dispatcher.ChatMessage,
+            tools: []const std.json.Value,
+            model: []const u8,
+            temperature: ?f64,
+        ) anyerror!dispatcher.ChatResponse,
+        chat: *const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            request: ChatRequest,
+            model: []const u8,
+            temperature: ?f64,
+        ) anyerror!dispatcher.ChatResponse,
         capabilities: Capabilities = .{},
     };
 
@@ -67,6 +100,37 @@ pub const Provider = struct {
             model,
             temperature,
         );
+    }
+
+    pub fn chatWithHistory(
+        self: Provider,
+        allocator: std.mem.Allocator,
+        messages: []const dispatcher.ChatMessage,
+        model: []const u8,
+        temperature: ?f64,
+    ) ![]u8 {
+        return self.vtable.chatWithHistory(self.ptr, allocator, messages, model, temperature);
+    }
+
+    pub fn chatWithTools(
+        self: Provider,
+        allocator: std.mem.Allocator,
+        messages: []const dispatcher.ChatMessage,
+        tools: []const std.json.Value,
+        model: []const u8,
+        temperature: ?f64,
+    ) !dispatcher.ChatResponse {
+        return self.vtable.chatWithTools(self.ptr, allocator, messages, tools, model, temperature);
+    }
+
+    pub fn chat(
+        self: Provider,
+        allocator: std.mem.Allocator,
+        request: ChatRequest,
+        model: []const u8,
+        temperature: ?f64,
+    ) !dispatcher.ChatResponse {
+        return self.vtable.chat(self.ptr, allocator, request, model, temperature);
     }
 
     pub fn capabilities(self: Provider) Capabilities {
@@ -106,12 +170,16 @@ pub const Provider = struct {
     }
 };
 
-test "Provider vtable dispatches to concrete receiver" {
+test "Provider vtable dispatches to concrete receiver across all four methods" {
     const Stub = struct {
+        last_method: enum { none, system, history, tools, chat } = .none,
         last_system: ?[]const u8 = null,
         last_message: []const u8 = "",
         last_model: []const u8 = "",
         last_temperature: ?f64 = null,
+        last_history_len: usize = 0,
+        last_tools_len: usize = 0,
+        last_tool_choice: ?[]const u8 = null,
 
         const Self = @This();
 
@@ -124,14 +192,71 @@ test "Provider vtable dispatches to concrete receiver" {
             temperature: ?f64,
         ) anyerror![]u8 {
             const self: *Self = @ptrCast(@alignCast(ptr));
+            self.last_method = .system;
             self.last_system = system_prompt;
             self.last_message = message;
             self.last_model = model;
             self.last_temperature = temperature;
-            return try allocator.dupe(u8, "stub-response");
+            return try allocator.dupe(u8, "stub-system");
         }
 
-        const vtable: Provider.VTable = .{ .chatWithSystem = chatWithSystem };
+        fn chatWithHistory(
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            messages: []const dispatcher.ChatMessage,
+            model: []const u8,
+            temperature: ?f64,
+        ) anyerror![]u8 {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            self.last_method = .history;
+            self.last_history_len = messages.len;
+            self.last_model = model;
+            self.last_temperature = temperature;
+            return try allocator.dupe(u8, "stub-history");
+        }
+
+        fn chatWithTools(
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            messages: []const dispatcher.ChatMessage,
+            tools: []const std.json.Value,
+            model: []const u8,
+            temperature: ?f64,
+        ) anyerror!dispatcher.ChatResponse {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            self.last_method = .tools;
+            self.last_history_len = messages.len;
+            self.last_tools_len = tools.len;
+            self.last_model = model;
+            self.last_temperature = temperature;
+            const text = try allocator.dupe(u8, "stub-tools");
+            return .{ .text = text, .owned = true };
+        }
+
+        fn chat(
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            request: ChatRequest,
+            model: []const u8,
+            temperature: ?f64,
+        ) anyerror!dispatcher.ChatResponse {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            self.last_method = .chat;
+            self.last_history_len = request.messages.len;
+            self.last_tools_len = if (request.tools) |t| t.len else 0;
+            self.last_tool_choice = request.tool_choice;
+            self.last_model = model;
+            self.last_temperature = temperature;
+            const text = try allocator.dupe(u8, "stub-chat");
+            return .{ .text = text, .owned = true };
+        }
+
+        const vtable: Provider.VTable = .{
+            .chatWithSystem = chatWithSystem,
+            .chatWithHistory = chatWithHistory,
+            .chatWithTools = chatWithTools,
+            .chat = chat,
+        };
 
         fn provider(self: *Self) Provider {
             return .{ .ptr = @ptrCast(self), .vtable = &vtable };
@@ -141,20 +266,47 @@ test "Provider vtable dispatches to concrete receiver" {
     var stub = Stub{};
     const handle = stub.provider();
 
-    const reply = try handle.chatWithSystem(
-        std.testing.allocator,
-        "you are a test",
-        "ping",
-        "model-x",
-        0.4,
-    );
-    defer std.testing.allocator.free(reply);
+    {
+        const reply = try handle.chatWithSystem(std.testing.allocator, "sys", "ping", "m", 0.4);
+        defer std.testing.allocator.free(reply);
+        try std.testing.expectEqualStrings("stub-system", reply);
+        try std.testing.expect(stub.last_method == .system);
+        try std.testing.expectEqualStrings("sys", stub.last_system.?);
+    }
 
-    try std.testing.expectEqualStrings("stub-response", reply);
-    try std.testing.expectEqualStrings("you are a test", stub.last_system.?);
-    try std.testing.expectEqualStrings("ping", stub.last_message);
-    try std.testing.expectEqualStrings("model-x", stub.last_model);
-    try std.testing.expectEqual(@as(?f64, 0.4), stub.last_temperature);
+    {
+        const history = [_]dispatcher.ChatMessage{
+            .{ .role = "user", .content = "hi" },
+            .{ .role = "assistant", .content = "hello" },
+        };
+        const reply = try handle.chatWithHistory(std.testing.allocator, &history, "m", null);
+        defer std.testing.allocator.free(reply);
+        try std.testing.expectEqualStrings("stub-history", reply);
+        try std.testing.expect(stub.last_method == .history);
+        try std.testing.expectEqual(@as(usize, 2), stub.last_history_len);
+    }
+
+    {
+        const history = [_]dispatcher.ChatMessage{.{ .role = "user", .content = "x" }};
+        const tools = [_]std.json.Value{};
+        var resp = try handle.chatWithTools(std.testing.allocator, &history, &tools, "m", 0.5);
+        defer resp.deinit(std.testing.allocator);
+        try std.testing.expect(stub.last_method == .tools);
+        try std.testing.expectEqual(@as(usize, 0), stub.last_tools_len);
+    }
+
+    {
+        const history = [_]dispatcher.ChatMessage{.{ .role = "user", .content = "x" }};
+        var resp = try handle.chat(
+            std.testing.allocator,
+            .{ .messages = &history, .tool_choice = "auto" },
+            "m",
+            null,
+        );
+        defer resp.deinit(std.testing.allocator);
+        try std.testing.expect(stub.last_method == .chat);
+        try std.testing.expectEqualStrings("auto", stub.last_tool_choice.?);
+    }
 }
 
 test "Capabilities defaults match Rust BASELINE_* constants" {
