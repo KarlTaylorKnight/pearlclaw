@@ -1,5 +1,6 @@
 use crate::multimodal;
 pub use crate::traits::ChatMessage;
+pub use zeroclaw_api::tool::ToolSpec;
 use crate::traits::{ChatResponse, Provider, ProviderCapabilities, TokenUsage, ToolCall};
 use async_trait::async_trait;
 use reqwest::Client;

@@ -705,3 +705,62 @@ No source changes this commit — plan only.
 - No Rust changes. No fixture changes. `eval_providers` is untouched — chat / chatWithHistory / chatWithTools are HTTP-bound and not eval-exercised. The polymorphic dispatch surface is verified by the stub test.
 - Verification: `cd zig && zig build` (clean); `cd zig && zig build test --summary all` (39/39 tests passed); `cargo build --manifest-path eval-tools/Cargo.toml --release`; `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored — unchanged); `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (112/112 — unchanged).
 - Phase 2B closes here. Phase 3 candidates: mock HTTP fixture infrastructure (exercises chat/chatWithSystem/chatWithTools end-to-end without the network — biggest unblock for live-parity testing); convert_tools / parse_native_tool_spec (lifts the raw-JSON tool boundary in the eval contract); list_models / warmup; OAuth port; multimodal image extraction; agent loop / runtime port; provider benches.
+
+---
+
+## 2026-05-07 — Phase 3-A convert_tools / parse_native_tool_spec (Claude direct)
+
+Lifts the raw-JSON tool boundary that Phase 2A's eval contract carried as a TODO. `Provider.ChatRequest.tools` is now typed as `?[]const ToolSpec` instead of `?[]const std.json.Value`; each provider converts the typed list to its native form internally.
+
+### Surface
+
+- New `provider.ToolSpec { name, description, parameters: std.json.Value }` mirrors `zeroclaw_api::tool::ToolSpec` (the canonical Rust type at `tool.rs:14-18`). `Provider.VTable.chatWithTools` and `Provider.chatWithTools` instance method now take `[]const ToolSpec`.
+- `OpenAiProvider.convertTools(allocator, tool_specs)` produces `[]NativeToolSpec` matching Rust's `convert_tools` at `openai.rs:237-251` exactly. `OpenAiProvider.parseNativeToolSpec(allocator, value)` now public — validates `type == "function"` (fixing a Phase 2A bug where the kind wasn't checked) and returns `error.InvalidToolSpecType` on mismatch, `error.InvalidJson` on missing fields. Mirrors Rust's `parse_native_tool_spec` at `openai.rs:104-116`.
+- `OpenAiProvider.buildNativeChatRequest` signature changed: takes `?[]const ToolSpec` (was `?[]const std.json.Value`). Internally calls `convertToolSpecs` → `[]NativeToolSpec`. The private `nativeToolSpecFromValue` (raw JSON → NativeToolSpec) is gone — `parseNativeToolSpec` is its public, validated replacement.
+- `OllamaProvider.convertTools(allocator, tool_specs)` produces `[]std.json.Value` shaped as `{"type":"function","function":{"name","description","parameters"}}`. Mirrors Rust's inline mapping in `chat()` at `ollama.rs:917-944`. **Divergence**: Rust applies `SchemaCleanr::clean_for_openai` to `parameters`; Zig passes them through unchanged. Phase 4 follow-up to port `SchemaCleanr` if a runtime caller needs the parity. The eval contract intentionally avoids parameter shapes that SchemaCleanr would mutate.
+- `OllamaProvider.chatWithTools` signature changed: takes `[]const ToolSpec`. Internally calls `convertTools`, then routes to the existing JSON-based `sendRequest` flow.
+- `provider.ChatRequest` (the polymorphic envelope) is now provider-agnostic in tools too — same struct usable by both providers' `chat()` methods. Each provider's `client.ProviderChatRequest` is now `pub const ProviderChatRequest = provider.ChatRequest;` (alias).
+
+### Eval contract changes
+
+- Existing `chat_request` op (both providers): tools input now uses ToolSpec literal `{name, description, parameters}` instead of pre-built native JSON. The two `scenario-chat-request-with-tools` fixtures had their `input.jsonl` files updated; expected outputs unchanged.
+- Existing `chat_with_history_request` op (Ollama): `tools` field dropped — Rust's `chat_with_history` trait default doesn't take tools, and the Phase 2A inclusion was a Codex over-implementation. No fixture used the field, so dropping is byte-equal-clean.
+- New ops:
+  - `convert_tools` for both providers — input `{tools: [ToolSpec...]}`, output `[<native form JSON>...]`. Eval-tested directly.
+  - `parse_native_tool_spec` for OpenAI — input `{value: <arbitrary JSON>}`, output either the validated `NativeToolSpec` or `{"error": "InvalidToolSpec"}`. The error tag is canonicalized: Rust's anyhow message and Zig's `@errorName` don't byte-equal, so both runners normalize parse failures to the single `"InvalidToolSpec"` string.
+
+### New fixtures
+
+- `evals/fixtures/providers/openai/scenario-convert-tools/` — 2 lines: single-tool with full JSON Schema, two-tool with empty parameters object.
+- `evals/fixtures/providers/ollama/scenario-convert-tools/` — 2 lines mirroring the OpenAI shape (Ollama's wrapping is byte-equal to OpenAI's `NativeToolSpec` JSON when no SchemaCleanr applies).
+- `evals/fixtures/providers/openai/scenario-parse-native-tool-spec/` — 3 lines: valid spec round-trip, `"type":"not-a-function"` (rejected), missing `type` field (rejected). Confirms the kind=="function" gate fires.
+
+### Files modified
+
+- New: `provider.ToolSpec`, three new fixture dirs.
+- `zig/src/providers/provider.zig` — ToolSpec struct, ChatRequest.tools type change, VTable signature update, instance method signature update, stub-dispatch test signature update.
+- `zig/src/providers/openai/client.zig` — `parseNativeToolSpec` made pub + validates kind, new `convertTools` method, `buildNativeChatRequest` signature changed, `chatWithTools` / `chatWithToolsWithChoice` signatures changed, vtable thunk signature update, new `convertToolSpecs` private helper, `writeNativeToolSpecJson` made pub for eval.
+- `zig/src/providers/openai/root.zig` — re-export `parseNativeToolSpec`.
+- `zig/src/providers/ollama/client.zig` — new `convertTools` method, new `toolSpecToOllamaJson` / `putOwnedString` / `putOwnedClonedValue` / `freeOwnedJsonObject` private helpers, `chatWithTools` signature changed (typed input), vtable thunk signature update.
+- `zig/src/tools/eval_providers.zig` — new `optionalToolSpecs` parser, dropped `optionalTools` for chat-request paths (kept as `optionalRawTools` for build_chat_request), new `runOllamaConvertTools` / `runOpenAiConvertTools` / `runOpenAiParseNativeToolSpec` ops, new local `freeOllamaToolJsonValue` and `writeJsonValue` helpers (kept local because of the parser_types module-collision Codex documented in the 2A first-pass).
+- `eval-tools/src/bin/eval-providers.rs` — new `optional_tool_specs` parser, new `run_ollama_convert_tools` / `run_openai_convert_tools` / `run_openai_parse_native_tool_spec`, removed unused `optional_tools` and `optional_openai_native_tools` helpers, dropped tools input from `run_ollama_history_request`, both `run_*_chat_request` now consume ToolSpec[] and inline-wrap (Ollama side) or call `OpenAiProvider::convert_tools` (OpenAI side).
+- 2 fixture inputs updated, 3 new fixture dirs.
+
+### Rust visibility widenings
+
+- `rust/crates/zeroclaw-providers/src/openai.rs`: `parse_native_tool_spec` and `convert_tools` made pub. `pub use zeroclaw_api::tool::ToolSpec` added so eval driver can `use zeroclaw_providers::openai::ToolSpec`.
+- `rust/crates/zeroclaw-providers/src/ollama.rs`: `pub use zeroclaw_api::tool::ToolSpec` added for symmetry.
+- No behavior changes. cargo test 783 / 0 / 1 doctest ignored unchanged.
+
+### Pinned divergences
+
+- Ollama's `convertTools` does NOT apply `SchemaCleanr::clean_for_openai`; Rust's runtime `chat()` does. The eval intentionally uses parameter shapes (object schemas with `properties`/`required`/empty) that survive SchemaCleanr unchanged, so Rust eval (which also skips SchemaCleanr) stays byte-equal with Zig. SchemaCleanr port is a separate Phase 4 chunk — it lives in `zeroclaw-api::schema` which has not been ported.
+- `parse_native_tool_spec` error normalization to `"InvalidToolSpec"` — both runners collapse anyhow / errorName to this canonical tag; the eval cannot byte-equal-test the underlying error message because Rust and Zig's error string formats differ. Round-trip success cases still byte-equal via Python sort_keys.
+
+### Verification
+
+- `cd zig && zig build` (clean).
+- `cd zig && zig build test --summary all` (49/49 tests passed — was 39 before this change; Codex's parallel OAuth Phase 1 work added 10 tests via `auth/` modules that get compiled once `pub const auth = @import("auth/root.zig")` lands in `zig/src/providers/root.zig`).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release`.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored — unchanged).
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (115 fixtures all OK: 86 parser + 3 memory + 3 dispatcher + 11 Ollama provider + 12 OpenAI provider).

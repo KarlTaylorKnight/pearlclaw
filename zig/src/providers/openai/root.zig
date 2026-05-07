@@ -8,6 +8,7 @@ pub const parseChatResponseBody = client.parseChatResponseBody;
 pub const parseNativeResponse = client.parseNativeResponse;
 pub const parseNativeResponseBody = client.parseNativeResponseBody;
 pub const parseNativeApiChatResponseBody = client.parseNativeApiChatResponseBody;
+pub const parseNativeToolSpec = client.parseNativeToolSpec;
 pub const ProviderChatRequest = client.ProviderChatRequest;
 
 pub const ChatRequest = types.ChatRequest;

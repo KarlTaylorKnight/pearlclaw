@@ -13,8 +13,8 @@ use zeroclaw_providers::ollama::{
 };
 use zeroclaw_providers::openai::{
     ChatMessage as OpenAiChatMessage, ChatRequest as OpenAiChatRequest, Message as OpenAiMessage,
-    NativeChatRequest as OpenAiNativeChatRequest, NativeToolSpec as OpenAiNativeToolSpec,
-    OpenAiProvider, ResponseMessage as OpenAiResponseMessage,
+    NativeChatRequest as OpenAiNativeChatRequest, OpenAiProvider,
+    ResponseMessage as OpenAiResponseMessage, ToolSpec,
 };
 use zeroclaw_providers::{ChatResponse, ToolCall};
 
@@ -112,6 +112,18 @@ fn main() -> Result<()> {
             }
             ("openai", "chat_request") => {
                 let result = run_openai_chat_request(&op_value)?;
+                write_result(&mut output, op, result);
+            }
+            ("ollama", "convert_tools") => {
+                let result = run_ollama_convert_tools(&op_value)?;
+                write_result(&mut output, op, result);
+            }
+            ("openai", "convert_tools") => {
+                let result = run_openai_convert_tools(&op_value)?;
+                write_result(&mut output, op, result);
+            }
+            ("openai", "parse_native_tool_spec") => {
+                let result = run_openai_parse_native_tool_spec(&op_value);
                 write_result(&mut output, op, result);
             }
             ("ollama", "parse_chat_response") => {
@@ -238,7 +250,6 @@ fn run_ollama_history_request(op: &Value) -> Result<Value> {
         .and_then(Value::as_f64)
         .context("temperature missing")?;
     let messages = chat_messages_from_value(op.get("messages").context("messages missing")?)?;
-    let tools = optional_tools(op.get("tools"))?;
 
     let provider = OllamaProvider::new(None, None);
     let api_messages = provider.convert_messages(&messages);
@@ -246,7 +257,7 @@ fn run_ollama_history_request(op: &Value) -> Result<Value> {
         api_messages,
         model,
         temperature,
-        tools.as_deref(),
+        None,
         None,
     );
     Ok(serde_json::to_value(request)?)
@@ -267,7 +278,26 @@ fn run_ollama_chat_request(op: &Value) -> Result<Value> {
             .get("messages")
             .context("request.messages missing")?,
     )?;
-    let tools = optional_tools(request_value.get("tools"))?;
+    let tool_specs = optional_tool_specs(request_value.get("tools"))?;
+    // Inline-wrap each ToolSpec the same way Zig OllamaProvider.convertTools
+    // does (no SchemaCleanr — Phase 3-A intentionally omits it; runtime
+    // chat() in Rust applies SchemaCleanr but the eval doesn't, since
+    // SchemaCleanr is a Phase 4 port).
+    let tools: Option<Vec<Value>> = tool_specs.as_ref().map(|specs| {
+        specs
+            .iter()
+            .map(|spec| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": spec.name,
+                        "description": spec.description,
+                        "parameters": spec.parameters,
+                    }
+                })
+            })
+            .collect()
+    });
 
     let provider = OllamaProvider::new(None, None);
     let api_messages = provider.convert_messages(&messages);
@@ -349,19 +379,70 @@ fn run_openai_chat_request(op: &Value) -> Result<Value> {
             .get("messages")
             .context("request.messages missing")?,
     )?;
-    let tools = optional_openai_native_tools(request_value.get("tools"))?;
+    let tool_specs = optional_tool_specs(request_value.get("tools"))?;
+    let native_tools = OpenAiProvider::convert_tools(tool_specs.as_deref());
     let tool_choice = optional_string_field(request_value, "tool_choice")?
-        .or_else(|| tools.as_ref().map(|_| "auto".to_string()));
+        .or_else(|| native_tools.as_ref().map(|_| "auto".to_string()));
 
     let request = OpenAiNativeChatRequest {
         model: model.to_string(),
         messages: OpenAiProvider::convert_messages(&messages),
         temperature: OpenAiProvider::adjust_temperature_for_model(model, temperature),
-        tools,
+        tools: native_tools,
         tool_choice,
         max_tokens,
     };
     Ok(serde_json::to_value(request)?)
+}
+
+fn run_ollama_convert_tools(op: &Value) -> Result<Value> {
+    let specs = optional_tool_specs(op.get("tools"))?
+        .context("tools missing or empty")?;
+    let converted: Vec<Value> = specs
+        .iter()
+        .map(|spec| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": spec.parameters,
+                }
+            })
+        })
+        .collect();
+    Ok(Value::Array(converted))
+}
+
+fn run_openai_convert_tools(op: &Value) -> Result<Value> {
+    let specs = optional_tool_specs(op.get("tools"))?
+        .context("tools missing or empty")?;
+    let native = OpenAiProvider::convert_tools(Some(&specs))
+        .context("convert_tools returned None for non-empty input")?;
+    Ok(serde_json::to_value(native)?)
+}
+
+fn run_openai_parse_native_tool_spec(op: &Value) -> Value {
+    let value = match op.get("value") {
+        Some(v) => v.clone(),
+        None => return serde_json::json!({"error": "InvalidToolSpec"}),
+    };
+    // Both eval runners normalize parse failures to a single "InvalidToolSpec"
+    // tag — Rust's anyhow message and Zig's @errorName don't byte-equal,
+    // so the eval contract collapses both to one canonical string.
+    match zeroclaw_providers::openai::parse_native_tool_spec(value) {
+        Ok(spec) => serde_json::to_value(spec).unwrap_or(Value::Null),
+        Err(_) => serde_json::json!({"error": "InvalidToolSpec"}),
+    }
+}
+
+fn optional_tool_specs(value: Option<&Value>) -> Result<Option<Vec<ToolSpec>>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) if items.is_empty() => Ok(None),
+        Some(v) => Ok(Some(serde_json::from_value(v.clone())
+            .context("tools must be a list of {name, description, parameters} objects")?)),
+    }
 }
 
 fn chat_messages_from_value(value: &Value) -> Result<Vec<OllamaChatMessage>> {
@@ -370,30 +451,6 @@ fn chat_messages_from_value(value: &Value) -> Result<Vec<OllamaChatMessage>> {
 
 fn openai_chat_messages_from_value(value: &Value) -> Result<Vec<OpenAiChatMessage>> {
     Ok(serde_json::from_value(value.clone())?)
-}
-
-fn optional_tools(value: Option<&Value>) -> Result<Option<Vec<Value>>> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Array(items)) if items.is_empty() => Ok(None),
-        Some(Value::Array(items)) => Ok(Some(items.clone())),
-        Some(_) => anyhow::bail!("tools must be array or null"),
-    }
-}
-
-fn optional_openai_native_tools(value: Option<&Value>) -> Result<Option<Vec<OpenAiNativeToolSpec>>> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Array(items)) if items.is_empty() => Ok(None),
-        Some(Value::Array(items)) => items
-            .iter()
-            .cloned()
-            .map(serde_json::from_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Some)
-            .map_err(Into::into),
-        Some(_) => anyhow::bail!("tools must be array or null"),
-    }
 }
 
 fn optional_u32(value: Option<&Value>) -> Result<Option<u32>> {

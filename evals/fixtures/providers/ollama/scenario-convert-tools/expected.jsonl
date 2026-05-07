@@ -1,0 +1,2 @@
+{"op":"convert_tools","result":[{"function":{"description":"Run a command","name":"shell","parameters":{"properties":{"cmd":{"type":"string"}},"required":["cmd"],"type":"object"}},"type":"function"}]}
+{"op":"convert_tools","result":[{"function":{"description":"first","name":"x","parameters":{}},"type":"function"},{"function":{"description":"second","name":"y","parameters":{}},"type":"function"}]}

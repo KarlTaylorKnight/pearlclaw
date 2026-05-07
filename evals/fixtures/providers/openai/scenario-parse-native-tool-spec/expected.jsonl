@@ -1,0 +1,3 @@
+{"op":"parse_native_tool_spec","result":{"function":{"description":"y","name":"x","parameters":{"type":"object"}},"type":"function"}}
+{"op":"parse_native_tool_spec","result":{"error":"InvalidToolSpec"}}
+{"op":"parse_native_tool_spec","result":{"error":"InvalidToolSpec"}}

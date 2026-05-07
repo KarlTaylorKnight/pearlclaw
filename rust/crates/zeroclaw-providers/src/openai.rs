@@ -1,4 +1,5 @@
 pub use crate::traits::ChatMessage;
+pub use zeroclaw_api::tool::ToolSpec;
 use crate::traits::{
     ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse, Provider, TokenUsage,
     ToolCall as ProviderToolCall,
@@ -6,7 +7,6 @@ use crate::traits::{
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use zeroclaw_api::tool::ToolSpec;
 
 /// OpenAI's public API endpoint.
 const BASE_URL: &str = "https://api.openai.com/v1";
@@ -102,7 +102,7 @@ pub struct NativeToolFunctionSpec {
     pub parameters: serde_json::Value,
 }
 
-fn parse_native_tool_spec(value: serde_json::Value) -> anyhow::Result<NativeToolSpec> {
+pub fn parse_native_tool_spec(value: serde_json::Value) -> anyhow::Result<NativeToolSpec> {
     let spec: NativeToolSpec = serde_json::from_value(value)
         .map_err(|e| anyhow::anyhow!("Invalid OpenAI tool specification: {e}"))?;
 
@@ -234,7 +234,7 @@ impl OpenAiProvider {
         }
     }
 
-    fn convert_tools(tools: Option<&[ToolSpec]>) -> Option<Vec<NativeToolSpec>> {
+    pub fn convert_tools(tools: Option<&[ToolSpec]>) -> Option<Vec<NativeToolSpec>> {
         tools.map(|items| {
             items
                 .iter()

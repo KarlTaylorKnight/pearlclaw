@@ -82,7 +82,7 @@ pub const OpenAiProvider = struct {
         self: *const OpenAiProvider,
         allocator: std.mem.Allocator,
         messages: []const dispatcher.ChatMessage,
-        raw_tools: ?[]const std.json.Value,
+        tool_specs: ?[]const provider_handle.ToolSpec,
         tool_choice: ?[]const u8,
         model: []const u8,
         temperature: f64,
@@ -95,19 +95,9 @@ pub const OpenAiProvider = struct {
         var native_tools: ?[]types.NativeToolSpec = null;
         errdefer if (native_tools) |tools| freeNativeToolSpecs(allocator, tools);
 
-        if (raw_tools) |tools| {
-            if (tools.len != 0) {
-                const owned_tools = try allocator.alloc(types.NativeToolSpec, tools.len);
-                var count: usize = 0;
-                errdefer {
-                    for (owned_tools[0..count]) |*tool| tool.deinit(allocator);
-                    allocator.free(owned_tools);
-                }
-                for (tools) |tool_value| {
-                    owned_tools[count] = try nativeToolSpecFromValue(allocator, tool_value);
-                    count += 1;
-                }
-                native_tools = owned_tools;
+        if (tool_specs) |specs| {
+            if (specs.len != 0) {
+                native_tools = try convertToolSpecs(allocator, specs);
             }
         }
 
@@ -129,6 +119,18 @@ pub const OpenAiProvider = struct {
             .tool_choice = tool_choice_owned,
             .max_tokens = max_tokens,
         };
+    }
+
+    /// Convert provider-agnostic `ToolSpec`s into OpenAI's native form.
+    /// Mirrors Rust's `OpenAiProvider::convert_tools` at openai.rs:237-251.
+    /// Each spec becomes a `NativeToolSpec{ kind: "function", function: ... }`.
+    pub fn convertTools(
+        self: *const OpenAiProvider,
+        allocator: std.mem.Allocator,
+        tool_specs: []const provider_handle.ToolSpec,
+    ) ![]types.NativeToolSpec {
+        _ = self;
+        return convertToolSpecs(allocator, tool_specs);
     }
 
     pub fn chatWithSystem(
@@ -214,7 +216,7 @@ pub const OpenAiProvider = struct {
         self: *const OpenAiProvider,
         allocator: std.mem.Allocator,
         messages: []const dispatcher.ChatMessage,
-        tools: []const std.json.Value,
+        tools: []const provider_handle.ToolSpec,
         model: []const u8,
         temperature: ?f64,
     ) !dispatcher.ChatResponse {
@@ -275,7 +277,7 @@ pub const OpenAiProvider = struct {
         self: *const OpenAiProvider,
         allocator: std.mem.Allocator,
         messages: []const dispatcher.ChatMessage,
-        tools: []const std.json.Value,
+        tools: []const provider_handle.ToolSpec,
         tool_choice: ?[]const u8,
         model: []const u8,
         temperature: ?f64,
@@ -378,7 +380,7 @@ fn openAiChatWithTools(
     ptr: *anyopaque,
     allocator: std.mem.Allocator,
     messages: []const dispatcher.ChatMessage,
-    tools: []const std.json.Value,
+    tools: []const provider_handle.ToolSpec,
     model: []const u8,
     temperature: ?f64,
 ) anyerror!dispatcher.ChatResponse {
@@ -542,8 +544,45 @@ fn convertToolMessage(
     };
 }
 
-fn nativeToolSpecFromValue(allocator: std.mem.Allocator, value: std.json.Value) !types.NativeToolSpec {
+fn convertToolSpecs(
+    allocator: std.mem.Allocator,
+    tool_specs: []const provider_handle.ToolSpec,
+) ![]types.NativeToolSpec {
+    const owned = try allocator.alloc(types.NativeToolSpec, tool_specs.len);
+    var count: usize = 0;
+    errdefer {
+        for (owned[0..count]) |*tool| tool.deinit(allocator);
+        allocator.free(owned);
+    }
+    for (tool_specs) |spec| {
+        const kind_owned = try allocator.dupe(u8, "function");
+        errdefer allocator.free(kind_owned);
+        const name_owned = try allocator.dupe(u8, spec.name);
+        errdefer allocator.free(name_owned);
+        const description_owned = try allocator.dupe(u8, spec.description);
+        errdefer allocator.free(description_owned);
+        var parameters_owned = try parser_types.cloneJsonValue(allocator, spec.parameters);
+        errdefer parser_types.freeJsonValue(allocator, &parameters_owned);
+        owned[count] = .{
+            .kind = kind_owned,
+            .function = .{
+                .name = name_owned,
+                .description = description_owned,
+                .parameters = parameters_owned,
+            },
+        };
+        count += 1;
+    }
+    return owned;
+}
+
+/// Validates a JSON value as a NativeToolSpec — mirrors Rust's
+/// `parse_native_tool_spec` at openai.rs:104-116. Requires `type` to
+/// be exactly `"function"`; any other value yields
+/// `error.InvalidToolSpecType`.
+pub fn parseNativeToolSpec(allocator: std.mem.Allocator, value: std.json.Value) !types.NativeToolSpec {
     const kind = getObjectString(value, "type") orelse return error.InvalidJson;
+    if (!std.mem.eql(u8, kind, "function")) return error.InvalidToolSpecType;
     const function_value = getObjectField(value, "function") orelse return error.InvalidJson;
     const name = getObjectString(function_value, "name") orelse return error.InvalidJson;
     const description = getObjectString(function_value, "description") orelse return error.InvalidJson;
@@ -964,7 +1003,7 @@ fn writeNativeToolCallJson(
     try writer.writeAll("}}");
 }
 
-fn writeNativeToolSpecJson(
+pub fn writeNativeToolSpecJson(
     allocator: std.mem.Allocator,
     tool: types.NativeToolSpec,
     writer: anytype,

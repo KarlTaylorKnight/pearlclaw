@@ -10,6 +10,7 @@ const ollama_types = ollama.types;
 const openai = zeroclaw.providers.openai;
 const openai_types = openai.types;
 const dispatcher = zeroclaw.runtime.agent.dispatcher;
+const provider_handle = zeroclaw.providers.provider;
 
 const EvalError = error{InvalidScenario};
 
@@ -78,6 +79,12 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
         try runOpenAiConvertMessages(allocator, parsed.value, writer);
     } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "chat_request")) {
         try runOpenAiChatRequest(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "convert_tools")) {
+        try runOllamaConvertTools(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "convert_tools")) {
+        try runOpenAiConvertTools(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "parse_native_tool_spec")) {
+        try runOpenAiParseNativeToolSpec(allocator, parsed.value, writer);
     } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "parse_chat_response")) {
         const body = getString(parsed.value, "body") orelse return EvalError.InvalidScenario;
         var result = try ollama.parseChatResponseBody(allocator, body);
@@ -176,7 +183,6 @@ fn runOllamaHistoryRequest(allocator: std.mem.Allocator, op_value: std.json.Valu
     const temperature = getF64(op_value, "temperature") orelse return EvalError.InvalidScenario;
     const messages = try chatMessagesFromField(allocator, op_value, "messages");
     defer freeChatMessages(allocator, messages);
-    const tools = optionalTools(op_value);
 
     var provider = try ollama.OllamaProvider.new(allocator, null, null);
     defer provider.deinit(allocator);
@@ -189,7 +195,7 @@ fn runOllamaHistoryRequest(allocator: std.mem.Allocator, op_value: std.json.Valu
         try cloneOllamaMessages(allocator, converted),
         model,
         temperature,
-        tools,
+        null,
         null,
     );
     defer request.deinit(allocator);
@@ -207,7 +213,8 @@ fn runOllamaChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, 
 
     const messages = try chatMessagesFromField(allocator, request_value, "messages");
     defer freeChatMessages(allocator, messages);
-    const tools = optionalTools(request_value);
+    const tool_specs = try optionalToolSpecs(allocator, request_value);
+    defer if (tool_specs) |s| allocator.free(s);
 
     var provider = try ollama.OllamaProvider.new(allocator, null, null);
     defer provider.deinit(allocator);
@@ -215,12 +222,21 @@ fn runOllamaChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, 
     const converted = try provider.convertMessages(allocator, messages);
     defer freeOllamaMessages(allocator, converted);
 
+    var converted_tools: ?[]std.json.Value = null;
+    defer if (converted_tools) |values| {
+        for (values) |*v| freeOllamaToolJsonValue(allocator, v);
+        allocator.free(values);
+    };
+    if (tool_specs) |specs| {
+        converted_tools = try provider.convertTools(allocator, specs);
+    }
+
     var request = try provider.buildChatRequestWithThink(
         allocator,
         try cloneOllamaMessages(allocator, converted),
         model,
         temperature,
-        tools,
+        converted_tools,
         null,
     );
     defer request.deinit(allocator);
@@ -228,6 +244,27 @@ fn runOllamaChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, 
     try writer.writeAll("{\"op\":\"chat_request\",\"result\":");
     try ollama.client.writeChatRequestJson(allocator, request, writer);
     try writer.writeAll("}\n");
+}
+
+fn runOllamaConvertTools(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
+    const tool_specs = (try optionalToolSpecs(allocator, op_value)) orelse return EvalError.InvalidScenario;
+    defer allocator.free(tool_specs);
+
+    var provider = try ollama.OllamaProvider.new(allocator, null, null);
+    defer provider.deinit(allocator);
+
+    const converted = try provider.convertTools(allocator, tool_specs);
+    defer {
+        for (converted) |*v| freeOllamaToolJsonValue(allocator, v);
+        allocator.free(converted);
+    }
+
+    try writer.writeAll("{\"op\":\"convert_tools\",\"result\":[");
+    for (converted, 0..) |tool, i| {
+        if (i != 0) try writer.writeByte(',');
+        try writeJsonValue(writer, tool);
+    }
+    try writer.writeAll("]}\n");
 }
 
 fn runOpenAiBuildChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
@@ -287,7 +324,8 @@ fn runOpenAiChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, 
 
     const messages = try chatMessagesFromField(allocator, request_value, "messages");
     defer freeChatMessages(allocator, messages);
-    const tools = optionalTools(request_value);
+    const tool_specs = try optionalToolSpecs(allocator, request_value);
+    defer if (tool_specs) |s| allocator.free(s);
     const tool_choice = getOptionalString(request_value, "tool_choice");
 
     var provider = try openai.OpenAiProvider.new(allocator, "test-openai-key");
@@ -296,7 +334,7 @@ fn runOpenAiChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, 
     var request = try provider.buildNativeChatRequest(
         allocator,
         messages,
-        tools,
+        tool_specs,
         tool_choice,
         model,
         temperature,
@@ -306,6 +344,52 @@ fn runOpenAiChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, 
 
     try writer.writeAll("{\"op\":\"chat_request\",\"result\":");
     try openai.client.writeNativeChatRequestJson(allocator, request, writer);
+    try writer.writeAll("}\n");
+}
+
+fn runOpenAiConvertTools(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
+    const tool_specs = (try optionalToolSpecs(allocator, op_value)) orelse return EvalError.InvalidScenario;
+    defer allocator.free(tool_specs);
+
+    var provider = try openai.OpenAiProvider.new(allocator, "test-openai-key");
+    defer provider.deinit(allocator);
+
+    const converted = try provider.convertTools(allocator, tool_specs);
+    defer {
+        for (converted) |*tool| {
+            var owned = tool.*;
+            owned.deinit(allocator);
+        }
+        allocator.free(converted);
+    }
+
+    try writer.writeAll("{\"op\":\"convert_tools\",\"result\":[");
+    for (converted, 0..) |tool, i| {
+        if (i != 0) try writer.writeByte(',');
+        try openai.client.writeNativeToolSpecJson(allocator, tool, writer);
+    }
+    try writer.writeAll("]}\n");
+}
+
+fn runOpenAiParseNativeToolSpec(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
+    const value_field = getField(op_value, "value") orelse {
+        try writer.writeAll("{\"op\":\"parse_native_tool_spec\",\"result\":{\"error\":\"InvalidToolSpec\"}}\n");
+        return;
+    };
+
+    // Both eval runners normalize parse failures to a single
+    // "InvalidToolSpec" tag — Rust's anyhow message and Zig's @errorName
+    // don't byte-equal, so the eval contract collapses both to one
+    // canonical string.
+    const result = openai.parseNativeToolSpec(allocator, value_field) catch {
+        try writer.writeAll("{\"op\":\"parse_native_tool_spec\",\"result\":{\"error\":\"InvalidToolSpec\"}}\n");
+        return;
+    };
+    var owned = result;
+    defer owned.deinit(allocator);
+
+    try writer.writeAll("{\"op\":\"parse_native_tool_spec\",\"result\":");
+    try openai.client.writeNativeToolSpecJson(allocator, owned, writer);
     try writer.writeAll("}\n");
 }
 
@@ -341,11 +425,97 @@ fn freeChatMessages(allocator: std.mem.Allocator, messages: []dispatcher.ChatMes
     allocator.free(messages);
 }
 
-fn optionalTools(value: std.json.Value) ?[]const std.json.Value {
+/// Mirrors parser_types.freeJsonValue — kept local to avoid the
+/// "file exists in multiple modules" import collision documented in the
+/// 2026-05-06 Ollama 2A first-pass section.
+fn freeOllamaToolJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void {
+    switch (value.*) {
+        .null, .bool, .integer, .float => {},
+        .number_string => |s| allocator.free(s),
+        .string => |s| allocator.free(s),
+        .array => |*array| {
+            for (array.items) |*item| freeOllamaToolJsonValue(allocator, item);
+            array.deinit();
+        },
+        .object => |*object| {
+            var it = object.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                freeOllamaToolJsonValue(allocator, entry.value_ptr);
+            }
+            object.deinit();
+        },
+    }
+}
+
+/// Minimal JSON value writer for offline eval output. Object keys are
+/// emitted in iteration order; downstream Python canonicalization sorts.
+fn writeJsonValue(writer: anytype, value: std.json.Value) !void {
+    switch (value) {
+        .null => try writer.writeAll("null"),
+        .bool => |b| try writer.writeAll(if (b) "true" else "false"),
+        .integer => |i| try writer.print("{d}", .{i}),
+        .float => |f| try std.json.stringify(f, .{}, writer),
+        .number_string => |s| try writer.writeAll(s),
+        .string => |s| try std.json.stringify(s, .{}, writer),
+        .array => |array| {
+            try writer.writeByte('[');
+            for (array.items, 0..) |item, i| {
+                if (i != 0) try writer.writeByte(',');
+                try writeJsonValue(writer, item);
+            }
+            try writer.writeByte(']');
+        },
+        .object => |object| {
+            try writer.writeByte('{');
+            var first = true;
+            var it = object.iterator();
+            while (it.next()) |entry| {
+                if (!first) try writer.writeByte(',');
+                first = false;
+                try std.json.stringify(entry.key_ptr.*, .{}, writer);
+                try writer.writeByte(':');
+                try writeJsonValue(writer, entry.value_ptr.*);
+            }
+            try writer.writeByte('}');
+        },
+    }
+}
+
+fn optionalRawTools(value: std.json.Value) ?[]const std.json.Value {
     const tools_value = getField(value, "tools") orelse return null;
     if (tools_value == .null) return null;
     if (tools_value != .array or tools_value.array.items.len == 0) return null;
     return tools_value.array.items;
+}
+
+/// Parse the `tools` field as a list of provider-agnostic ToolSpec values.
+/// Returned slice and field strings BORROW from the parsed JSON tree
+/// passed in (which the eval driver keeps alive via `parsed.deinit()`).
+/// Returns null when the field is missing, null, or empty.
+fn optionalToolSpecs(
+    allocator: std.mem.Allocator,
+    value: std.json.Value,
+) !?[]provider_handle.ToolSpec {
+    const tools_value = getField(value, "tools") orelse return null;
+    if (tools_value == .null) return null;
+    if (tools_value != .array or tools_value.array.items.len == 0) return null;
+
+    const specs = try allocator.alloc(provider_handle.ToolSpec, tools_value.array.items.len);
+    errdefer allocator.free(specs);
+    for (tools_value.array.items, 0..) |item, i| {
+        if (item != .object) return EvalError.InvalidScenario;
+        const name = item.object.get("name") orelse return EvalError.InvalidScenario;
+        const description = item.object.get("description") orelse return EvalError.InvalidScenario;
+        const parameters = item.object.get("parameters") orelse return EvalError.InvalidScenario;
+        if (name != .string or description != .string) return EvalError.InvalidScenario;
+        specs[i] = .{
+            .name = name.string,
+            .description = description.string,
+            .parameters = parameters,
+        };
+    }
+    return specs;
 }
 
 fn cloneOllamaMessages(allocator: std.mem.Allocator, messages: []const ollama_types.Message) ![]ollama_types.Message {

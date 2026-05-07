@@ -1,0 +1,2 @@
+{"op":"convert_tools","result":[{"function":{"description":"Search the web","name":"search","parameters":{"properties":{"q":{"type":"string"}},"required":["q"],"type":"object"}},"type":"function"}]}
+{"op":"convert_tools","result":[{"function":{"description":"A","name":"a","parameters":{}},"type":"function"},{"function":{"description":"B","name":"b","parameters":{}},"type":"function"}]}

@@ -1,0 +1,2 @@
+{"provider":"openai","op":"convert_tools","tools":[{"name":"search","description":"Search the web","parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}}]}
+{"provider":"openai","op":"convert_tools","tools":[{"name":"a","description":"A","parameters":{}},{"name":"b","description":"B","parameters":{}}]}

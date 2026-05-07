@@ -36,13 +36,26 @@ pub const Capabilities = struct {
     supports_streaming: bool = false,
 };
 
+/// Provider-agnostic tool descriptor mirroring
+/// `zeroclaw_api::tool::ToolSpec`. Each provider's `convertTools` turns
+/// these into its native form (OpenAI `NativeToolSpec`, Ollama
+/// `{"type":"function","function":{...}}` JSON).
+///
+/// Lifetime: `name`, `description`, and `parameters` borrow from the
+/// caller; `convertTools` deep-copies them into provider-owned form.
+pub const ToolSpec = struct {
+    name: []const u8,
+    description: []const u8,
+    parameters: std.json.Value,
+};
+
 /// Polymorphic chat-request envelope used by `Provider.chat`. Mirrors the
 /// `zeroclaw_api::provider::ChatRequest` shape, with `tool_choice` exposed
 /// for providers that need it (OpenAI). Providers that don't honor a field
 /// (e.g., Ollama ignores `tool_choice`) silently drop it.
 pub const ChatRequest = struct {
     messages: []const dispatcher.ChatMessage,
-    tools: ?[]const std.json.Value = null,
+    tools: ?[]const ToolSpec = null,
     tool_choice: ?[]const u8 = null,
 };
 
@@ -70,7 +83,7 @@ pub const Provider = struct {
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
             messages: []const dispatcher.ChatMessage,
-            tools: []const std.json.Value,
+            tools: []const ToolSpec,
             model: []const u8,
             temperature: ?f64,
         ) anyerror!dispatcher.ChatResponse,
@@ -116,7 +129,7 @@ pub const Provider = struct {
         self: Provider,
         allocator: std.mem.Allocator,
         messages: []const dispatcher.ChatMessage,
-        tools: []const std.json.Value,
+        tools: []const ToolSpec,
         model: []const u8,
         temperature: ?f64,
     ) !dispatcher.ChatResponse {
@@ -219,7 +232,7 @@ test "Provider vtable dispatches to concrete receiver across all four methods" {
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
             messages: []const dispatcher.ChatMessage,
-            tools: []const std.json.Value,
+            tools: []const ToolSpec,
             model: []const u8,
             temperature: ?f64,
         ) anyerror!dispatcher.ChatResponse {
@@ -288,7 +301,7 @@ test "Provider vtable dispatches to concrete receiver across all four methods" {
 
     {
         const history = [_]dispatcher.ChatMessage{.{ .role = "user", .content = "x" }};
-        const tools = [_]std.json.Value{};
+        const tools = [_]ToolSpec{};
         var resp = try handle.chatWithTools(std.testing.allocator, &history, &tools, "m", 0.5);
         defer resp.deinit(std.testing.allocator);
         try std.testing.expect(stub.last_method == .tools);

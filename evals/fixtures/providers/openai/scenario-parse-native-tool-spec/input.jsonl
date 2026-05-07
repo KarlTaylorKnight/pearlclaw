@@ -1,0 +1,3 @@
+{"provider":"openai","op":"parse_native_tool_spec","value":{"type":"function","function":{"name":"x","description":"y","parameters":{"type":"object"}}}}
+{"provider":"openai","op":"parse_native_tool_spec","value":{"type":"not-a-function","function":{"name":"x","description":"y","parameters":{}}}}
+{"provider":"openai","op":"parse_native_tool_spec","value":{"function":{"name":"x","description":"y","parameters":{}}}}

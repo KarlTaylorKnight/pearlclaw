@@ -230,13 +230,22 @@ pub const OllamaProvider = struct {
         self: *const OllamaProvider,
         allocator: std.mem.Allocator,
         messages: []const dispatcher.ChatMessage,
-        tools: []const std.json.Value,
+        tools: []const provider_handle.ToolSpec,
         model: []const u8,
         temperature: ?f64,
     ) !dispatcher.ChatResponse {
         const api_messages = try self.convertMessages(allocator, messages);
         defer freeMessages(allocator, api_messages);
-        const tools_opt: ?[]const std.json.Value = if (tools.len == 0) null else tools;
+
+        var converted_tools: ?[]std.json.Value = null;
+        defer if (converted_tools) |values| {
+            for (values) |*v| parser_types.freeJsonValue(allocator, v);
+            allocator.free(values);
+        };
+        if (tools.len != 0) {
+            converted_tools = try self.convertTools(allocator, tools);
+        }
+        const tools_opt: ?[]const std.json.Value = converted_tools;
 
         var response = try self.sendRequest(
             allocator,
@@ -248,6 +257,28 @@ pub const OllamaProvider = struct {
         defer response.deinit(allocator);
 
         return try apiResponseToToolChatResponse(allocator, response, model);
+    }
+
+    /// Convert provider-agnostic `ToolSpec`s into Ollama's request-tools
+    /// JSON shape: `{"type":"function","function":{"name","description","parameters"}}`.
+    /// Mirrors Rust's inline mapping at ollama.rs:917-944.
+    pub fn convertTools(
+        self: *const OllamaProvider,
+        allocator: std.mem.Allocator,
+        tool_specs: []const provider_handle.ToolSpec,
+    ) ![]std.json.Value {
+        _ = self;
+        const owned = try allocator.alloc(std.json.Value, tool_specs.len);
+        var count: usize = 0;
+        errdefer {
+            for (owned[0..count]) |*v| parser_types.freeJsonValue(allocator, v);
+            allocator.free(owned);
+        }
+        for (tool_specs) |spec| {
+            owned[count] = try toolSpecToOllamaJson(allocator, spec);
+            count += 1;
+        }
+        return owned;
     }
 
     pub fn chat(
@@ -422,7 +453,7 @@ fn ollamaChatWithTools(
     ptr: *anyopaque,
     allocator: std.mem.Allocator,
     messages: []const dispatcher.ChatMessage,
-    tools: []const std.json.Value,
+    tools: []const provider_handle.ToolSpec,
     model: []const u8,
     temperature: ?f64,
 ) anyerror!dispatcher.ChatResponse {
@@ -808,6 +839,77 @@ pub fn fallbackTextForEmptyContent(
 pub fn parseToolArguments(allocator: std.mem.Allocator, arguments: []const u8) !std.json.Value {
     if (try parser_types.parseJsonValueOwned(allocator, arguments)) |value| return value;
     return parser_types.emptyObject(allocator);
+}
+
+fn toolSpecToOllamaJson(
+    allocator: std.mem.Allocator,
+    spec: provider_handle.ToolSpec,
+) !std.json.Value {
+    // parser_types.freeJsonValue frees both keys and values via the
+    // allocator, so every key here must be allocator-duped (NOT a string
+    // literal). Each block scopes the per-key/value errdefers so they
+    // expire once `put` succeeds — the outer `function_obj` / `outer_obj`
+    // errdefer takes over as the owner.
+    var function_obj = std.json.ObjectMap.init(allocator);
+    errdefer freeOwnedJsonObject(allocator, &function_obj);
+
+    try putOwnedString(allocator, &function_obj, "name", spec.name);
+    try putOwnedString(allocator, &function_obj, "description", spec.description);
+    try putOwnedClonedValue(allocator, &function_obj, "parameters", spec.parameters);
+
+    var outer_obj = std.json.ObjectMap.init(allocator);
+    errdefer freeOwnedJsonObject(allocator, &outer_obj);
+
+    try putOwnedString(allocator, &outer_obj, "type", "function");
+    // Reserve capacity so the final put can't fail — once it succeeds,
+    // function_obj is owned by outer_obj. Failure here would leave both
+    // function_obj and outer_obj live, double-freeing on errdefer.
+    try outer_obj.ensureUnusedCapacity(1);
+    {
+        const function_key = try allocator.dupe(u8, "function");
+        errdefer allocator.free(function_key);
+        outer_obj.putAssumeCapacity(function_key, .{ .object = function_obj });
+    }
+
+    return .{ .object = outer_obj };
+}
+
+fn putOwnedString(
+    allocator: std.mem.Allocator,
+    object: *std.json.ObjectMap,
+    key: []const u8,
+    value: []const u8,
+) !void {
+    const key_owned = try allocator.dupe(u8, key);
+    errdefer allocator.free(key_owned);
+    const value_owned = try allocator.dupe(u8, value);
+    errdefer allocator.free(value_owned);
+    try object.ensureUnusedCapacity(1);
+    object.putAssumeCapacity(key_owned, .{ .string = value_owned });
+}
+
+fn putOwnedClonedValue(
+    allocator: std.mem.Allocator,
+    object: *std.json.ObjectMap,
+    key: []const u8,
+    value: std.json.Value,
+) !void {
+    const key_owned = try allocator.dupe(u8, key);
+    errdefer allocator.free(key_owned);
+    var cloned = try parser_types.cloneJsonValue(allocator, value);
+    errdefer parser_types.freeJsonValue(allocator, &cloned);
+    try object.ensureUnusedCapacity(1);
+    object.putAssumeCapacity(key_owned, cloned);
+}
+
+fn freeOwnedJsonObject(allocator: std.mem.Allocator, object: *std.json.ObjectMap) void {
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+        var v = entry.value_ptr.*;
+        parser_types.freeJsonValue(allocator, &v);
+    }
+    object.deinit();
 }
 
 pub const ExtractedTool = struct {
