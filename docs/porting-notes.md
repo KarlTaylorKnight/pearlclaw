@@ -552,6 +552,32 @@ No source changes this commit — plan only.
 
 ---
 
+## 2026-05-06 — OpenAI provider Phase 2A first-pass (Codex)
+
+- Ported the concrete Phase 2A OpenAI native chat surface in `zig/src/providers/openai/`: Native* request/response/tool/usage types, `convertMessages`, `chatWithTools`, structured `chat`, native request JSON writing with skip-if-null fields, native response parsing, and `parseNativeResponse` / `parseNativeResponseBody`. The `Provider.VTable` remains unchanged; chat-method vtable promotion stays deferred to Phase 2B per D9.
+- `convertMessages` mirrors Rust's OpenAI history conversion: assistant JSON with parseable `tool_calls` becomes a NativeMessage with `type="function"` tool calls and stringified arguments preserved verbatim; assistant `content` and `reasoning_content` pass through when present; tool-role JSON maps `tool_call_id` and optional `content`; plain/other messages keep raw content as `Some`.
+- Native response parsing now extracts text via OpenAI effective-content semantics, preserves `reasoning_content`, maps NativeToolCall into dispatcher tool calls, and carries usage (`prompt_tokens`, `completion_tokens`, `prompt_tokens_details.cached_tokens`) on the native path only. The Phase 1 simple `parseChatResponseBody` remains unchanged with `usage = null`.
+- `chatWithTools` builds a `NativeChatRequest` from raw preformatted tool JSON and posts synchronously to `{base_url}/chat/completions` with `Authorization: Bearer`. Structured `chat` routes tools to the native path and routes no-tool calls through the Rust trait-default shape (`system` + last `user` via `chatWithSystem`) while still exercising native request conversion for the offline request-build helper.
+- Rust-side surfacing in `rust/crates/zeroclaw-providers/src/openai.rs`: `ChatMessage` is re-exported from the `openai` module; Native* structs and exercised fields are public; `convert_messages`, `parse_native_response`, and `NativeResponseMessage::effective_content` are public; added `parse_native_response_body(body: &str)` to parse `NativeChatResponse`, delegate to `parse_native_response`, and attach usage. No behavior logic was changed beyond eval reach.
+- Eval harness additions:
+  - Rust and Zig `eval-providers` gained OpenAI ops `convert_messages`, `chat_request`, and `parse_native_response`.
+  - Added five scenarios under `evals/fixtures/providers/openai/`: assistant tool-call conversion, tool-role id conversion, non-JSON assistant fallback, full native chat request with tools and `max_tokens`, and native response parsing with tool calls plus usage.
+  - Full fixture count is now 112/112 (86 parser + 3 memory + 3 dispatcher + 10 Ollama provider + 10 OpenAI provider).
+- Pinned quirks preserved:
+  - `NativeToolCall.type` writes as JSON field `"type"`, matching Rust's serde rename.
+  - `NativeFunctionCall.arguments` remains a string throughout; it is never parsed as JSON on conversion or response parsing.
+  - `skip_serializing_if = Option::is_none` is mirrored manually in Zig writers, so all-null optional NativeMessage fields serialize as only `{"role":"..."}`.
+  - Effective content is content when present and non-empty, otherwise reasoning content, otherwise null for the native path; no trimming.
+  - Missing response tool-call IDs use Zig's deterministic Phase 1 placeholder `00000000-0000-4000-8000-000000000000` instead of Rust's `Uuid::new_v4()`; fixtures intentionally avoid the missing-id path.
+- Phase 2B/3 deferrals confirmed unchanged: `parse_native_tool_spec` validation, `convert_tools`, `chat_with_history` as a separate OpenAI Zig method, `list_models`, `warmup`, OAuth, capability getters / chat-method vtable extension, Ollama refactors, mock HTTP fixture infrastructure, agent loop, runtime memory/parser work, and provider benches.
+- Verification: `cd zig && zig build` (clean); `cd zig && zig build test --summary all` (36/36 tests passed); `cargo build --manifest-path eval-tools/Cargo.toml --release` (release build finished); `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored); `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (all fixtures OK, 112 inputs).
+- Zig 0.14.1 notes: OpenAI native JSON needed manual skip-if-null writers because there is no serde-style derive; response/request ownership relies on explicit `std.json.Value` clone/free for tool parameters. The native eval path keeps raw tool JSON as NativeToolSpec-shaped values to avoid porting `parse_native_tool_spec` before Phase 2B.
+- Open questions for Claude review:
+  - Confirm the `chat_request` eval's raw NativeToolSpec path is the desired OpenAI mirror of Ollama Phase 2A until `convert_tools` / `parse_native_tool_spec` land.
+  - Confirm the no-tools `chat` routing should stay trait-default `chatWithSystem` shaped, while offline `chat_request` remains the native request-build parity surface.
+
+---
+
 ## 2026-05-06 — Provider vtable Phase 1 first-pass (Claude direct)
 
 - New `zig/src/providers/provider.zig` (~50 LOC): `Provider` handle (`ptr: *anyopaque, vtable: *const VTable`), `Provider.VTable` carrying a single `chatWithSystem` field, instance method that dispatches through the vtable. Doc-comment captures the receiver-lifetime contract.
@@ -590,3 +616,57 @@ No source changes this commit — plan only.
 - Open questions for Claude review:
   - The structured `chat_request` eval uses raw preformatted tool JSON to keep standalone `convert_tools` deferred; confirm this is the desired Phase 2A boundary before OpenAI Phase 2 lands.
   - Rust's current trait capability method still returns prompt-guided/native-tools false for Ollama, while this concrete Zig `chat` path follows the Phase 2A instruction to route native tools when tools are present. Confirm whether the later capability/vtable phase should keep or revise that Rust behavior.
+
+---
+
+## 2026-05-06 — Provider Phase 2B-1 capability getters plan (Claude direct)
+
+Both providers ship Phase 1 vtable (chatWithSystem only). Phase 2A added concrete chat-method overloads (Ollama landed at `7b9b002`; OpenAI is Codex-in-flight). Phase 2B is the vtable extension; this Day 0 plan scopes **Phase 2B-1 — capability getters only**, leaving the chat-method dispatch (chat / chatWithHistory / chatWithTools into Provider.VTable) to **Phase 2B-2** AFTER OpenAI Phase 2A lands. That respects D9 second-consumer for chat methods while letting the static capability surface land now without blocking on Codex.
+
+### Phase 2B-1 surface
+
+In:
+- New `Capabilities` struct in `zig/src/providers/provider.zig`. Eight fields with Rust-baseline defaults so each provider only declares deltas:
+  - `default_temperature: f64 = 0.7`           (Rust `BASELINE_TEMPERATURE`)
+  - `default_max_tokens: u32 = 4096`           (Rust `BASELINE_MAX_TOKENS`)
+  - `default_timeout_secs: u64 = 120`          (Rust `BASELINE_TIMEOUT_SECS`)
+  - `default_base_url: ?[]const u8 = null`     (Rust trait default `None`)
+  - `default_wire_api: []const u8 = "chat_completions"` (Rust `BASELINE_WIRE_API`)
+  - `supports_native_tools: bool = false`      (Rust `ProviderCapabilities::default().native_tool_calling`)
+  - `supports_vision: bool = false`            (Rust `ProviderCapabilities::default().vision`)
+  - `supports_streaming: bool = false`         (Rust trait default)
+- `Capabilities` embedded by-value in `Provider.VTable` as a new field; each provider's vtable const declares its specific deltas via field-default overrides.
+- `Provider` instance methods exposing each field plus a `capabilities()` accessor returning the whole struct.
+- Per-provider deltas (matching Rust):
+  - **Ollama**: `default_temperature = 0.8`, `default_timeout_secs = 600`, `default_base_url = "http://localhost:11434"`, `supports_native_tools = false`, `supports_vision = true`. Other fields take baseline.
+  - **OpenAI**: `default_base_url = "https://api.openai.com/v1"`, `supports_native_tools = true`. Other fields take baseline.
+
+Out (Phase 2B-2 / Phase 3):
+- `chat`, `chatWithHistory`, `chatWithTools` into `Provider.VTable` — Phase 2B-2, after OpenAI Phase 2A.
+- `prompt_caching` field in Capabilities — defer until a runtime caller needs it. Rust's `ProviderCapabilities` has it; we'll add when we port the runtime piece that reads it.
+- `supports_streaming_tool_events` — niche, defer.
+- A `Provider` factory / registry — defer until config loading lands.
+- Aligning Ollama's `supports_native_tools` flag with the concrete `chat()` routing — landed via this plan (the flag now correctly reports `false` matching Rust; the Ollama `chat()` override at `7b9b002` continues to route tools natively, which is intentional override semantics matching Rust at `ollama.rs:917-957`).
+
+### Files Claude creates / modifies
+
+- `zig/src/providers/provider.zig` — add `Capabilities` struct, extend `Provider.VTable` with `capabilities: Capabilities`, add eight instance methods + `capabilities()` accessor, extend the existing stub-dispatch test or add a second test asserting baseline defaults round-trip.
+- `zig/src/providers/ollama/client.zig` — extend `ollama_vtable` const with `.capabilities = .{ .default_temperature = 0.8, ... }`.
+- `zig/src/providers/openai/client.zig` — extend `openai_vtable` const with `.capabilities = .{ .default_base_url = "...", .supports_native_tools = true }`.
+- `zig/src/providers/root.zig` — re-export `Capabilities` for callers (optional).
+- New tests in each client.zig asserting per-provider getter values.
+
+No Rust changes. No fixture changes. Eval harness unchanged — capability getters are not eval-exercised in Phase 2B-1 (the harness operates on offline message conversion + request-build paths, none of which read these flags). Phase 2B-2's chat-vtable extension may add fixture coverage if a polymorphic eval op gets useful.
+
+### Design decisions
+
+- **Capabilities embedded by-value in VTable**: each provider's `const <name>_vtable` gets a comptime-known struct literal that contains both the function pointer table AND the static capabilities. Reading from the handle is `handle.vtable.capabilities.X`. The `Provider` handle stays at 16 bytes (ptr + vtable pointer); no extra indirection.
+- **Why static (not per-instance)**: every Rust `default_*` and `supports_*` we need to port is a `&self`-receiver method that ignores `&self` and returns a per-type constant. None of the Phase 2B-1 fields depend on instance state. If a future provider needs per-instance defaults, we promote that field to a vtable function pointer at that point.
+- **Field-default-override pattern**: declaring `Capabilities{ .default_temperature = 0.8 }` and letting other fields take struct defaults keeps each provider's vtable readable and makes deltas-from-baseline obvious. Matches Rust trait defaults + per-provider overrides 1:1.
+
+### Pinned questions for review
+
+- Naming: instance methods use camelCase (`defaultTemperature`) to match the surrounding Zig style, even though Rust uses `default_temperature`. The struct field stays `default_temperature` (snake_case) to mirror serde field names if we ever serialize. Acceptable, but flagging in case we want a future cleanup.
+- Test coverage: per-provider tests assert Rust-matching values (Ollama 0.8 / 600s / vision=true / native_tools=false; OpenAI api.openai.com/v1 / native_tools=true). If Rust constants ever drift, these tests catch it. No Rust-side cross-check (no eval op), so Rust drift only fails when we re-run a manual check.
+
+No source changes this commit — plan only.
