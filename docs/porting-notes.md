@@ -671,3 +671,22 @@ No source changes this commit — plan only.
   - Confirm the `chat_request` eval's raw NativeToolSpec path is the desired OpenAI mirror of Ollama Phase 2A until `convert_tools` / `parse_native_tool_spec` land.
   - Confirm the no-tools `chat` routing should stay trait-default `chatWithSystem` shaped, while offline `chat_request` remains the native request-build parity surface.
 - Claude review note (post-first-pass): The `chat()` no-tools path builds a `native_request` via `buildNativeChatRequest` then immediately `defer native_request.deinit(allocator)` without using it before delegating to `chatWithSystem`. This is wasted work (alloc + free on every no-tools call) but not a correctness bug. Likely a misread of the brief sentence "build the request via convert_messages even when routing to chatWithSystem (so the fixture matches Rust's chat override)" — that sentence was about the eval `chat_request` op, not the runtime `chat()` method. Flag for a small Phase 2B cleanup; eval is not affected.
+
+---
+
+## 2026-05-07 — Provider Phase 2B-1 capability getters first-pass (Claude direct)
+
+- New `Capabilities` struct in `zig/src/providers/provider.zig` with eight fields (`default_temperature`, `default_max_tokens`, `default_timeout_secs`, `default_base_url`, `default_wire_api`, `supports_native_tools`, `supports_vision`, `supports_streaming`). All defaults mirror Rust's `BASELINE_*` constants in `zeroclaw-api/src/provider.rs:301-359` so each concrete provider only declares deltas. Added `BASELINE_TEMPERATURE`/`BASELINE_MAX_TOKENS`/`BASELINE_TIMEOUT_SECS`/`BASELINE_WIRE_API` pub consts for ergonomics.
+- `Capabilities` embedded by-value as a new field in `Provider.VTable` (with a `.{}` default so existing tests / consumers compile). Provider handle gains 9 new instance methods: `capabilities()` returning the whole struct, plus one accessor per field (`defaultTemperature`, `defaultMaxTokens`, `defaultTimeoutSecs`, `defaultBaseUrl`, `defaultWireApi`, `supportsNativeTools`, `supportsVision`, `supportsStreaming`).
+- Per-provider deltas in each client.zig vtable const:
+  - **Ollama** (`zig/src/providers/ollama/client.zig:387-395`): `default_temperature = TEMPERATURE_DEFAULT (0.8)`, `default_timeout_secs = 600`, `default_base_url = BASE_URL ("http://localhost:11434")`, `supports_native_tools = false`, `supports_vision = true`. Other fields take baseline.
+  - **OpenAI** (`zig/src/providers/openai/client.zig:346-352`): `default_base_url = BASE_URL ("https://api.openai.com/v1")`, `supports_native_tools = true`. Other fields take baseline.
+- `zig/src/providers/root.zig` re-exports `Capabilities` for callers that want the type without going through the handle.
+- 3 new tests (36 → 39):
+  - `provider.zig` "Capabilities defaults match Rust BASELINE_* constants" — pure struct-default check; catches Rust-baseline drift if a future plan changes a constant.
+  - `ollama/client.zig` "Ollama capabilities match Rust impl" — asserts each getter via the handle returns Ollama's specific value.
+  - `openai/client.zig` "OpenAI capabilities match Rust impl" — same for OpenAI.
+- Resolves the Codex-flagged `supports_native_tools` divergence from Phase 2A: the flag now correctly reports `false` for Ollama (matching Rust at `ollama.rs:907-915`) and `true` for OpenAI (matching `openai.rs:487-489`). Ollama's concrete `chat()` override at `7b9b002` continues to ignore the flag and route tools natively, which is intentional Rust-matching override semantics — no Phase 2A revision needed.
+- No Rust changes. No fixture changes. Eval harness unchanged — `run_evals.py` still 112/112. Capability getters are not eval-exercised in 2B-1 (the tests in client.zig + provider.zig are the cross-check; Rust drift only fails when those tests are re-run).
+- Verification: `cd zig && zig build` (clean); `cd zig && zig build test --summary all` (39/39 tests passed); `cargo build --manifest-path eval-tools/Cargo.toml --release`; `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored — unchanged); `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (112/112 — unchanged).
+- Phase 2B-2 remains: append `chat`, `chatWithHistory`, `chatWithTools` function pointers to `Provider.VTable`, wire each concrete provider's existing concrete method through a thunk, add a polymorphic-dispatch test using a stub provider type. The OpenAI 2A `chat()` no-tools wasted-work cleanup folds in cleanly there.

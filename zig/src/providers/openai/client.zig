@@ -345,6 +345,10 @@ const provider_handle = @import("../provider.zig");
 
 const openai_vtable: provider_handle.Provider.VTable = .{
     .chatWithSystem = openAiChatWithSystem,
+    .capabilities = .{
+        .default_base_url = BASE_URL,
+        .supports_native_tools = true,
+    },
 };
 
 fn openAiChatWithSystem(
@@ -1014,6 +1018,21 @@ test "provider() handle aliases the concrete OpenAiProvider" {
     const handle = concrete.provider();
     try std.testing.expectEqual(@intFromPtr(&concrete), @intFromPtr(handle.ptr));
     try std.testing.expect(handle.vtable.chatWithSystem == openAiChatWithSystem);
+}
+
+test "OpenAI capabilities match Rust impl" {
+    var concrete = try OpenAiProvider.new(std.testing.allocator, "test-key");
+    defer concrete.deinit(std.testing.allocator);
+
+    const handle = concrete.provider();
+    try std.testing.expectEqual(@as(f64, 0.7), handle.defaultTemperature());
+    try std.testing.expectEqual(@as(u32, 4096), handle.defaultMaxTokens());
+    try std.testing.expectEqual(@as(u64, 120), handle.defaultTimeoutSecs());
+    try std.testing.expectEqualStrings("https://api.openai.com/v1", handle.defaultBaseUrl().?);
+    try std.testing.expectEqualStrings("chat_completions", handle.defaultWireApi());
+    try std.testing.expect(handle.supportsNativeTools());
+    try std.testing.expect(!handle.supportsVision());
+    try std.testing.expect(!handle.supportsStreaming());
 }
 
 test "convertMessages extracts assistant native tool calls" {

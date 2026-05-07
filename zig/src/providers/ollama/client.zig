@@ -386,6 +386,13 @@ const provider_handle = @import("../provider.zig");
 
 const ollama_vtable: provider_handle.Provider.VTable = .{
     .chatWithSystem = ollamaChatWithSystem,
+    .capabilities = .{
+        .default_temperature = TEMPERATURE_DEFAULT,
+        .default_timeout_secs = 600,
+        .default_base_url = BASE_URL,
+        .supports_native_tools = false,
+        .supports_vision = true,
+    },
 };
 
 fn ollamaChatWithSystem(
@@ -1226,6 +1233,21 @@ test "provider() handle aliases the concrete OllamaProvider" {
     const handle = concrete.provider();
     try std.testing.expectEqual(@intFromPtr(&concrete), @intFromPtr(handle.ptr));
     try std.testing.expect(handle.vtable.chatWithSystem == ollamaChatWithSystem);
+}
+
+test "Ollama capabilities match Rust impl" {
+    var concrete = try OllamaProvider.new(std.testing.allocator, null, null);
+    defer concrete.deinit(std.testing.allocator);
+
+    const handle = concrete.provider();
+    try std.testing.expectEqual(@as(f64, 0.8), handle.defaultTemperature());
+    try std.testing.expectEqual(@as(u32, 4096), handle.defaultMaxTokens());
+    try std.testing.expectEqual(@as(u64, 600), handle.defaultTimeoutSecs());
+    try std.testing.expectEqualStrings("http://localhost:11434", handle.defaultBaseUrl().?);
+    try std.testing.expectEqualStrings("chat_completions", handle.defaultWireApi());
+    try std.testing.expect(!handle.supportsNativeTools());
+    try std.testing.expect(handle.supportsVision());
+    try std.testing.expect(!handle.supportsStreaming());
 }
 
 test "convertMessages extracts assistant tool calls" {
