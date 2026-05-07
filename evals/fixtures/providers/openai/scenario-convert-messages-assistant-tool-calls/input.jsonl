@@ -1,0 +1,1 @@
+{"provider":"openai","op":"convert_messages","messages":[{"role":"assistant","content":"{\"content\":\"I will call\",\"tool_calls\":[{\"id\":\"call_shell\",\"name\":\"shell.exec\",\"arguments\":\"{\\\"command\\\":\\\"pwd\\\"}\"}],\"reasoning_content\":\"Need command\"}"}]}

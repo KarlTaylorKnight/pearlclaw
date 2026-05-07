@@ -1,0 +1,1 @@
+{"op":"parse_native_response","result":{"reasoning_content":"Need command","text":"Need command","tool_calls":[{"arguments":"{\"command\":\"pwd\"}","id":"call_shell","name":"shell.exec"}],"usage":{"cached_input_tokens":7,"input_tokens":100,"output_tokens":20}}}

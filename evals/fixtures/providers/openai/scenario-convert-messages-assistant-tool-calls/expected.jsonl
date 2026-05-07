@@ -1,0 +1,1 @@
+{"op":"convert_messages","result":[{"content":"I will call","reasoning_content":"Need command","role":"assistant","tool_calls":[{"function":{"arguments":"{\"command\":\"pwd\"}","name":"shell.exec"},"id":"call_shell","type":"function"}]}]}

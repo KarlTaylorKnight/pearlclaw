@@ -552,32 +552,6 @@ No source changes this commit — plan only.
 
 ---
 
-## 2026-05-06 — OpenAI provider Phase 2A first-pass (Codex)
-
-- Ported the concrete Phase 2A OpenAI native chat surface in `zig/src/providers/openai/`: Native* request/response/tool/usage types, `convertMessages`, `chatWithTools`, structured `chat`, native request JSON writing with skip-if-null fields, native response parsing, and `parseNativeResponse` / `parseNativeResponseBody`. The `Provider.VTable` remains unchanged; chat-method vtable promotion stays deferred to Phase 2B per D9.
-- `convertMessages` mirrors Rust's OpenAI history conversion: assistant JSON with parseable `tool_calls` becomes a NativeMessage with `type="function"` tool calls and stringified arguments preserved verbatim; assistant `content` and `reasoning_content` pass through when present; tool-role JSON maps `tool_call_id` and optional `content`; plain/other messages keep raw content as `Some`.
-- Native response parsing now extracts text via OpenAI effective-content semantics, preserves `reasoning_content`, maps NativeToolCall into dispatcher tool calls, and carries usage (`prompt_tokens`, `completion_tokens`, `prompt_tokens_details.cached_tokens`) on the native path only. The Phase 1 simple `parseChatResponseBody` remains unchanged with `usage = null`.
-- `chatWithTools` builds a `NativeChatRequest` from raw preformatted tool JSON and posts synchronously to `{base_url}/chat/completions` with `Authorization: Bearer`. Structured `chat` routes tools to the native path and routes no-tool calls through the Rust trait-default shape (`system` + last `user` via `chatWithSystem`) while still exercising native request conversion for the offline request-build helper.
-- Rust-side surfacing in `rust/crates/zeroclaw-providers/src/openai.rs`: `ChatMessage` is re-exported from the `openai` module; Native* structs and exercised fields are public; `convert_messages`, `parse_native_response`, and `NativeResponseMessage::effective_content` are public; added `parse_native_response_body(body: &str)` to parse `NativeChatResponse`, delegate to `parse_native_response`, and attach usage. No behavior logic was changed beyond eval reach.
-- Eval harness additions:
-  - Rust and Zig `eval-providers` gained OpenAI ops `convert_messages`, `chat_request`, and `parse_native_response`.
-  - Added five scenarios under `evals/fixtures/providers/openai/`: assistant tool-call conversion, tool-role id conversion, non-JSON assistant fallback, full native chat request with tools and `max_tokens`, and native response parsing with tool calls plus usage.
-  - Full fixture count is now 112/112 (86 parser + 3 memory + 3 dispatcher + 10 Ollama provider + 10 OpenAI provider).
-- Pinned quirks preserved:
-  - `NativeToolCall.type` writes as JSON field `"type"`, matching Rust's serde rename.
-  - `NativeFunctionCall.arguments` remains a string throughout; it is never parsed as JSON on conversion or response parsing.
-  - `skip_serializing_if = Option::is_none` is mirrored manually in Zig writers, so all-null optional NativeMessage fields serialize as only `{"role":"..."}`.
-  - Effective content is content when present and non-empty, otherwise reasoning content, otherwise null for the native path; no trimming.
-  - Missing response tool-call IDs use Zig's deterministic Phase 1 placeholder `00000000-0000-4000-8000-000000000000` instead of Rust's `Uuid::new_v4()`; fixtures intentionally avoid the missing-id path.
-- Phase 2B/3 deferrals confirmed unchanged: `parse_native_tool_spec` validation, `convert_tools`, `chat_with_history` as a separate OpenAI Zig method, `list_models`, `warmup`, OAuth, capability getters / chat-method vtable extension, Ollama refactors, mock HTTP fixture infrastructure, agent loop, runtime memory/parser work, and provider benches.
-- Verification: `cd zig && zig build` (clean); `cd zig && zig build test --summary all` (36/36 tests passed); `cargo build --manifest-path eval-tools/Cargo.toml --release` (release build finished); `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored); `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (all fixtures OK, 112 inputs).
-- Zig 0.14.1 notes: OpenAI native JSON needed manual skip-if-null writers because there is no serde-style derive; response/request ownership relies on explicit `std.json.Value` clone/free for tool parameters. The native eval path keeps raw tool JSON as NativeToolSpec-shaped values to avoid porting `parse_native_tool_spec` before Phase 2B.
-- Open questions for Claude review:
-  - Confirm the `chat_request` eval's raw NativeToolSpec path is the desired OpenAI mirror of Ollama Phase 2A until `convert_tools` / `parse_native_tool_spec` land.
-  - Confirm the no-tools `chat` routing should stay trait-default `chatWithSystem` shaped, while offline `chat_request` remains the native request-build parity surface.
-
----
-
 ## 2026-05-06 — Provider vtable Phase 1 first-pass (Claude direct)
 
 - New `zig/src/providers/provider.zig` (~50 LOC): `Provider` handle (`ptr: *anyopaque, vtable: *const VTable`), `Provider.VTable` carrying a single `chatWithSystem` field, instance method that dispatches through the vtable. Doc-comment captures the receiver-lifetime contract.
@@ -670,3 +644,30 @@ No Rust changes. No fixture changes. Eval harness unchanged — capability gette
 - Test coverage: per-provider tests assert Rust-matching values (Ollama 0.8 / 600s / vision=true / native_tools=false; OpenAI api.openai.com/v1 / native_tools=true). If Rust constants ever drift, these tests catch it. No Rust-side cross-check (no eval op), so Rust drift only fails when we re-run a manual check.
 
 No source changes this commit — plan only.
+
+---
+
+## 2026-05-07 — OpenAI provider Phase 2A first-pass (Codex)
+
+- Ported the concrete Phase 2A OpenAI native chat surface in `zig/src/providers/openai/`: Native* request/response/tool/usage types, `convertMessages`, `chatWithTools`, structured `chat`, native request JSON writing with skip-if-null fields, native response parsing, and `parseNativeResponse` / `parseNativeResponseBody`. The `Provider.VTable` remains unchanged; chat-method vtable promotion stays deferred to Phase 2B per D9.
+- `convertMessages` mirrors Rust's OpenAI history conversion: assistant JSON with parseable `tool_calls` becomes a NativeMessage with `type="function"` tool calls and stringified arguments preserved verbatim; assistant `content` and `reasoning_content` pass through when present; tool-role JSON maps `tool_call_id` and optional `content`; plain/other messages keep raw content as `Some`.
+- Native response parsing now extracts text via OpenAI effective-content semantics, preserves `reasoning_content`, maps NativeToolCall into dispatcher tool calls, and carries usage (`prompt_tokens`, `completion_tokens`, `prompt_tokens_details.cached_tokens`) on the native path only. The Phase 1 simple `parseChatResponseBody` remains unchanged with `usage = null`.
+- `chatWithTools` builds a `NativeChatRequest` from raw preformatted tool JSON and posts synchronously to `{base_url}/chat/completions` with `Authorization: Bearer`. Structured `chat` routes tools to the native path and routes no-tool calls through the Rust trait-default shape (`system` + last `user` via `chatWithSystem`) while still exercising native request conversion for the offline request-build helper.
+- Rust-side surfacing in `rust/crates/zeroclaw-providers/src/openai.rs`: `ChatMessage` is re-exported from the `openai` module; Native* structs and exercised fields are public; `convert_messages`, `parse_native_response`, and `NativeResponseMessage::effective_content` are public; added `parse_native_response_body(body: &str)` to parse `NativeChatResponse`, delegate to `parse_native_response`, and attach usage. No behavior logic was changed beyond eval reach.
+- Eval harness additions:
+  - Rust and Zig `eval-providers` gained OpenAI ops `convert_messages`, `chat_request`, and `parse_native_response`.
+  - Added five scenarios under `evals/fixtures/providers/openai/`: assistant tool-call conversion, tool-role id conversion, non-JSON assistant fallback, full native chat request with tools and `max_tokens`, and native response parsing with tool calls plus usage.
+  - Full fixture count is now 112/112 (86 parser + 3 memory + 3 dispatcher + 10 Ollama provider + 10 OpenAI provider).
+- Pinned quirks preserved:
+  - `NativeToolCall.type` writes as JSON field `"type"`, matching Rust's serde rename.
+  - `NativeFunctionCall.arguments` remains a string throughout; it is never parsed as JSON on conversion or response parsing.
+  - `skip_serializing_if = Option::is_none` is mirrored manually in Zig writers, so all-null optional NativeMessage fields serialize as only `{"role":"..."}`.
+  - Effective content is content when present and non-empty, otherwise reasoning content, otherwise null for the native path; no trimming.
+  - Missing response tool-call IDs use Zig's deterministic Phase 1 placeholder `00000000-0000-4000-8000-000000000000` instead of Rust's `Uuid::new_v4()`; fixtures intentionally avoid the missing-id path.
+- Phase 2B/3 deferrals confirmed unchanged: `parse_native_tool_spec` validation, `convert_tools`, `chat_with_history` as a separate OpenAI Zig method, `list_models`, `warmup`, OAuth, capability getters / chat-method vtable extension, Ollama refactors, mock HTTP fixture infrastructure, agent loop, runtime memory/parser work, and provider benches.
+- Verification: `cd zig && zig build` (clean); `cd zig && zig build test --summary all` (36/36 tests passed); `cargo build --manifest-path eval-tools/Cargo.toml --release` (release build finished); `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored); `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (all fixtures OK, 112 inputs).
+- Zig 0.14.1 notes: OpenAI native JSON needed manual skip-if-null writers because there is no serde-style derive; response/request ownership relies on explicit `std.json.Value` clone/free for tool parameters. The native eval path keeps raw tool JSON as NativeToolSpec-shaped values to avoid porting `parse_native_tool_spec` before Phase 2B.
+- Open questions for Claude review:
+  - Confirm the `chat_request` eval's raw NativeToolSpec path is the desired OpenAI mirror of Ollama Phase 2A until `convert_tools` / `parse_native_tool_spec` land.
+  - Confirm the no-tools `chat` routing should stay trait-default `chatWithSystem` shaped, while offline `chat_request` remains the native request-build parity surface.
+- Claude review note (post-first-pass): The `chat()` no-tools path builds a `native_request` via `buildNativeChatRequest` then immediately `defer native_request.deinit(allocator)` without using it before delegating to `chatWithSystem`. This is wasted work (alloc + free on every no-tools call) but not a correctness bug. Likely a misread of the brief sentence "build the request via convert_messages even when routing to chatWithSystem (so the fixture matches Rust's chat override)" — that sentence was about the eval `chat_request` op, not the runtime `chat()` method. Flag for a small Phase 2B cleanup; eval is not affected.

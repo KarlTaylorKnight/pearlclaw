@@ -1,6 +1,7 @@
+pub use crate::traits::ChatMessage;
 use crate::traits::{
-    ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
-    Provider, TokenUsage, ToolCall as ProviderToolCall,
+    ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse, Provider, TokenUsage,
+    ToolCall as ProviderToolCall,
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -60,45 +61,45 @@ impl ResponseMessage {
 }
 
 #[derive(Debug, Serialize)]
-struct NativeChatRequest {
-    model: String,
-    messages: Vec<NativeMessage>,
-    temperature: f64,
+pub struct NativeChatRequest {
+    pub model: String,
+    pub messages: Vec<NativeMessage>,
+    pub temperature: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<NativeToolSpec>>,
+    pub tools: Option<Vec<NativeToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<String>,
+    pub tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
-struct NativeMessage {
-    role: String,
+pub struct NativeMessage {
+    pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
+    pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<NativeToolCall>>,
+    pub tool_calls: Option<Vec<NativeToolCall>>,
     /// Raw reasoning content from thinking models; pass-through for providers
     /// that require it in assistant tool-call history messages.
     #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_content: Option<String>,
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct NativeToolSpec {
+pub struct NativeToolSpec {
     #[serde(rename = "type")]
-    kind: String,
-    function: NativeToolFunctionSpec,
+    pub kind: String,
+    pub function: NativeToolFunctionSpec,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct NativeToolFunctionSpec {
-    name: String,
-    description: String,
-    parameters: serde_json::Value,
+pub struct NativeToolFunctionSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
 }
 
 fn parse_native_tool_spec(value: serde_json::Value) -> anyhow::Result<NativeToolSpec> {
@@ -116,61 +117,61 @@ fn parse_native_tool_spec(value: serde_json::Value) -> anyhow::Result<NativeTool
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct NativeToolCall {
+pub struct NativeToolCall {
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<String>,
+    pub id: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    kind: Option<String>,
-    function: NativeFunctionCall,
+    pub kind: Option<String>,
+    pub function: NativeFunctionCall,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct NativeFunctionCall {
-    name: String,
-    arguments: String,
+pub struct NativeFunctionCall {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct NativeChatResponse {
-    choices: Vec<NativeChoice>,
+pub struct NativeChatResponse {
+    pub choices: Vec<NativeChoice>,
     #[serde(default)]
-    usage: Option<UsageInfo>,
+    pub usage: Option<UsageInfo>,
 }
 
 #[derive(Debug, Deserialize)]
-struct UsageInfo {
+pub struct UsageInfo {
     #[serde(default)]
-    prompt_tokens: Option<u64>,
+    pub prompt_tokens: Option<u64>,
     #[serde(default)]
-    completion_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
     #[serde(default)]
-    prompt_tokens_details: Option<PromptTokensDetails>,
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
 }
 
 #[derive(Debug, Deserialize)]
-struct PromptTokensDetails {
+pub struct PromptTokensDetails {
     #[serde(default)]
-    cached_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
-struct NativeChoice {
-    message: NativeResponseMessage,
+pub struct NativeChoice {
+    pub message: NativeResponseMessage,
 }
 
 #[derive(Debug, Deserialize)]
-struct NativeResponseMessage {
+pub struct NativeResponseMessage {
     #[serde(default)]
-    content: Option<String>,
+    pub content: Option<String>,
     /// Reasoning/thinking models may return output in `reasoning_content`.
     #[serde(default)]
-    reasoning_content: Option<String>,
+    pub reasoning_content: Option<String>,
     #[serde(default)]
-    tool_calls: Option<Vec<NativeToolCall>>,
+    pub tool_calls: Option<Vec<NativeToolCall>>,
 }
 
 impl NativeResponseMessage {
-    fn effective_content(&self) -> Option<String> {
+    pub fn effective_content(&self) -> Option<String> {
         match &self.content {
             Some(c) if !c.is_empty() => Some(c.clone()),
             _ => self.reasoning_content.clone(),
@@ -249,7 +250,7 @@ impl OpenAiProvider {
         })
     }
 
-    fn convert_messages(messages: &[ChatMessage]) -> Vec<NativeMessage> {
+    pub fn convert_messages(messages: &[ChatMessage]) -> Vec<NativeMessage> {
         messages
             .iter()
             .map(|m| {
@@ -318,7 +319,7 @@ impl OpenAiProvider {
             .collect()
     }
 
-    fn parse_native_response(message: NativeResponseMessage) -> ProviderChatResponse {
+    pub fn parse_native_response(message: NativeResponseMessage) -> ProviderChatResponse {
         let text = message.effective_content();
         let reasoning_content = message.reasoning_content.clone();
         let tool_calls = message
@@ -365,6 +366,24 @@ impl OpenAiProvider {
             usage: None,
             reasoning_content,
         })
+    }
+
+    pub fn parse_native_response_body(body: &str) -> anyhow::Result<ProviderChatResponse> {
+        let native_response: NativeChatResponse = serde_json::from_str(body)?;
+        let usage = native_response.usage.map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+            cached_input_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
+        });
+        let message = native_response
+            .choices
+            .into_iter()
+            .next()
+            .map(|choice| choice.message)
+            .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
+        let mut result = Self::parse_native_response(message);
+        result.usage = usage;
+        Ok(result)
     }
 }
 

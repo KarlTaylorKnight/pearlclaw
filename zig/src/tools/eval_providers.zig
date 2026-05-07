@@ -74,6 +74,10 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
         try runOllamaChatRequest(allocator, parsed.value, writer);
     } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "build_chat_request")) {
         try runOpenAiBuildChatRequest(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "convert_messages")) {
+        try runOpenAiConvertMessages(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "chat_request")) {
+        try runOpenAiChatRequest(allocator, parsed.value, writer);
     } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "parse_chat_response")) {
         const body = getString(parsed.value, "body") orelse return EvalError.InvalidScenario;
         var result = try ollama.parseChatResponseBody(allocator, body);
@@ -86,6 +90,13 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
         var result = try openai.parseChatResponseBody(allocator, body);
         defer result.deinit(allocator);
         try writer.writeAll("{\"op\":\"parse_chat_response\",\"result\":");
+        try writeChatResponse(writer, result);
+        try writer.writeAll("}\n");
+    } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "parse_native_response")) {
+        const body = getString(parsed.value, "body") orelse return EvalError.InvalidScenario;
+        var result = try openai.parseNativeResponseBody(allocator, body);
+        defer result.deinit(allocator);
+        try writer.writeAll("{\"op\":\"parse_native_response\",\"result\":");
         try writeChatResponse(writer, result);
         try writer.writeAll("}\n");
     } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "adjust_temperature_for_model")) {
@@ -252,6 +263,52 @@ fn runOpenAiBuildChatRequest(allocator: std.mem.Allocator, op_value: std.json.Va
     try writer.writeAll("}\n");
 }
 
+fn runOpenAiConvertMessages(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
+    const messages = try chatMessagesFromField(allocator, op_value, "messages");
+    defer freeChatMessages(allocator, messages);
+
+    var provider = try openai.OpenAiProvider.new(allocator, "test-openai-key");
+    defer provider.deinit(allocator);
+
+    const converted = try provider.convertMessages(allocator, messages);
+    defer freeOpenAiNativeMessages(allocator, converted);
+
+    try writer.writeAll("{\"op\":\"convert_messages\",\"result\":");
+    try openai.client.writeNativeMessagesJson(allocator, converted, writer);
+    try writer.writeAll("}\n");
+}
+
+fn runOpenAiChatRequest(allocator: std.mem.Allocator, op_value: std.json.Value, writer: anytype) !void {
+    const model = getString(op_value, "model") orelse return EvalError.InvalidScenario;
+    const temperature = getF64(op_value, "temperature") orelse return EvalError.InvalidScenario;
+    const max_tokens = getOptionalU32(op_value, "max_tokens");
+    const request_value = getField(op_value, "request") orelse return EvalError.InvalidScenario;
+    if (request_value != .object) return EvalError.InvalidScenario;
+
+    const messages = try chatMessagesFromField(allocator, request_value, "messages");
+    defer freeChatMessages(allocator, messages);
+    const tools = optionalTools(request_value);
+    const tool_choice = getOptionalString(request_value, "tool_choice");
+
+    var provider = try openai.OpenAiProvider.new(allocator, "test-openai-key");
+    defer provider.deinit(allocator);
+
+    var request = try provider.buildNativeChatRequest(
+        allocator,
+        messages,
+        tools,
+        tool_choice,
+        model,
+        temperature,
+        max_tokens,
+    );
+    defer request.deinit(allocator);
+
+    try writer.writeAll("{\"op\":\"chat_request\",\"result\":");
+    try openai.client.writeNativeChatRequestJson(allocator, request, writer);
+    try writer.writeAll("}\n");
+}
+
 fn chatMessagesFromField(
     allocator: std.mem.Allocator,
     value: std.json.Value,
@@ -374,6 +431,11 @@ fn cloneOutgoingToolCalls(
 }
 
 fn freeOllamaMessages(allocator: std.mem.Allocator, messages: []ollama_types.Message) void {
+    for (messages) |*message| message.deinit(allocator);
+    allocator.free(messages);
+}
+
+fn freeOpenAiNativeMessages(allocator: std.mem.Allocator, messages: []openai_types.NativeMessage) void {
     for (messages) |*message| message.deinit(allocator);
     allocator.free(messages);
 }

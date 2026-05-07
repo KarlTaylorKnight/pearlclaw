@@ -12,8 +12,9 @@ use zeroclaw_providers::ollama::{
     OllamaToolCall,
 };
 use zeroclaw_providers::openai::{
-    ChatRequest as OpenAiChatRequest, Message as OpenAiMessage, OpenAiProvider,
-    ResponseMessage as OpenAiResponseMessage,
+    ChatMessage as OpenAiChatMessage, ChatRequest as OpenAiChatRequest, Message as OpenAiMessage,
+    NativeChatRequest as OpenAiNativeChatRequest, NativeToolSpec as OpenAiNativeToolSpec,
+    OpenAiProvider, ResponseMessage as OpenAiResponseMessage,
 };
 use zeroclaw_providers::{ChatResponse, ToolCall};
 
@@ -105,6 +106,14 @@ fn main() -> Result<()> {
                 let result = run_openai_build_chat_request(&op_value)?;
                 write_result(&mut output, op, result);
             }
+            ("openai", "convert_messages") => {
+                let result = run_openai_convert_messages(&op_value)?;
+                write_result(&mut output, op, result);
+            }
+            ("openai", "chat_request") => {
+                let result = run_openai_chat_request(&op_value)?;
+                write_result(&mut output, op, result);
+            }
             ("ollama", "parse_chat_response") => {
                 let body = op_value
                     .get("body")
@@ -119,6 +128,14 @@ fn main() -> Result<()> {
                     .and_then(Value::as_str)
                     .context("body missing")?;
                 let response = OpenAiProvider::parse_chat_response_body(body)?;
+                write_result(&mut output, op, chat_response_to_json(&response));
+            }
+            ("openai", "parse_native_response") => {
+                let body = op_value
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .context("body missing")?;
+                let response = OpenAiProvider::parse_native_response_body(body)?;
                 write_result(&mut output, op, chat_response_to_json(&response));
             }
             ("openai", "adjust_temperature_for_model") => {
@@ -309,7 +326,49 @@ fn run_openai_build_chat_request(op: &Value) -> Result<Value> {
     Ok(serde_json::to_value(request)?)
 }
 
+fn run_openai_convert_messages(op: &Value) -> Result<Value> {
+    let messages = openai_chat_messages_from_value(op.get("messages").context("messages missing")?)?;
+    Ok(serde_json::to_value(OpenAiProvider::convert_messages(
+        &messages,
+    ))?)
+}
+
+fn run_openai_chat_request(op: &Value) -> Result<Value> {
+    let model = op
+        .get("model")
+        .and_then(Value::as_str)
+        .context("model missing")?;
+    let temperature = op
+        .get("temperature")
+        .and_then(Value::as_f64)
+        .context("temperature missing")?;
+    let max_tokens = optional_u32(op.get("max_tokens"))?;
+    let request_value = op.get("request").context("request missing")?;
+    let messages = openai_chat_messages_from_value(
+        request_value
+            .get("messages")
+            .context("request.messages missing")?,
+    )?;
+    let tools = optional_openai_native_tools(request_value.get("tools"))?;
+    let tool_choice = optional_string_field(request_value, "tool_choice")?
+        .or_else(|| tools.as_ref().map(|_| "auto".to_string()));
+
+    let request = OpenAiNativeChatRequest {
+        model: model.to_string(),
+        messages: OpenAiProvider::convert_messages(&messages),
+        temperature: OpenAiProvider::adjust_temperature_for_model(model, temperature),
+        tools,
+        tool_choice,
+        max_tokens,
+    };
+    Ok(serde_json::to_value(request)?)
+}
+
 fn chat_messages_from_value(value: &Value) -> Result<Vec<OllamaChatMessage>> {
+    Ok(serde_json::from_value(value.clone())?)
+}
+
+fn openai_chat_messages_from_value(value: &Value) -> Result<Vec<OpenAiChatMessage>> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
@@ -319,6 +378,34 @@ fn optional_tools(value: Option<&Value>) -> Result<Option<Vec<Value>>> {
         Some(Value::Array(items)) if items.is_empty() => Ok(None),
         Some(Value::Array(items)) => Ok(Some(items.clone())),
         Some(_) => anyhow::bail!("tools must be array or null"),
+    }
+}
+
+fn optional_openai_native_tools(value: Option<&Value>) -> Result<Option<Vec<OpenAiNativeToolSpec>>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) if items.is_empty() => Ok(None),
+        Some(Value::Array(items)) => items
+            .iter()
+            .cloned()
+            .map(serde_json::from_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+            .map_err(Into::into),
+        Some(_) => anyhow::bail!("tools must be array or null"),
+    }
+}
+
+fn optional_u32(value: Option<&Value>) -> Result<Option<u32>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => Ok(Some(
+            value
+                .as_u64()
+                .context("value must be an unsigned integer")?
+                .try_into()
+                .context("value out of range")?,
+        )),
     }
 }
 

@@ -1,0 +1,1 @@
+{"op":"convert_messages","result":[{"content":"/tmp/project","role":"tool","tool_call_id":"call_shell"}]}

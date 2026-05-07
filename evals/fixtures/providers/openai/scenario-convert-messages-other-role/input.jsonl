@@ -1,0 +1,1 @@
+{"provider":"openai","op":"convert_messages","messages":[{"role":"assistant","content":"plain string reply"}]}
