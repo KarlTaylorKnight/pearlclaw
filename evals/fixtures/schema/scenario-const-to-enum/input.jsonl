@@ -1,0 +1,2 @@
+{"op":"clean_for_openai","schema":{"type":"string","const":"x","description":"fixed"}}
+{"op":"clean_for_openai","schema":{"type":"object","properties":{"mode":{"type":"string","const":"fast"},"count":{"type":"integer","const":3}}}}

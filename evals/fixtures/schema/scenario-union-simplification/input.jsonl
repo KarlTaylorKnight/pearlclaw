@@ -1,0 +1,4 @@
+{"op":"clean_for_gemini","schema":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"nullable string"}}
+{"op":"clean_for_gemini","schema":{"oneOf":[{"type":"string","const":"admin"},{"type":"string","const":"user"},{"type":"string","const":"guest"}],"title":"role"}}
+{"op":"clean_for_gemini","schema":{"type":"object","anyOf":[{"type":"object","properties":{"a":{"type":"string"}}},{"type":"object","properties":{"b":{"type":"integer"}}}],"description":"mixed object variants"}}
+{"op":"clean_for_gemini","schema":{"anyOf":[{"type":"string","const":"solo"}],"default":"solo"}}

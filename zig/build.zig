@@ -103,6 +103,19 @@ pub fn build(b: *std.Build) void {
     linkSqlite(b, eval_oauth_exe);
     b.installArtifact(eval_oauth_exe);
 
+    const eval_schema_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_schema.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_schema_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_schema_exe = b.addExecutable(.{
+        .name = "eval-schema",
+        .root_module = eval_schema_mod,
+    });
+    linkSqlite(b, eval_schema_exe);
+    b.installArtifact(eval_schema_exe);
+
     // ─── Test step ───────────────────────────────────────────────────────
     const lib_unit_tests = b.addTest(.{ .root_module = zeroclaw_mod });
     linkSqlite(b, lib_unit_tests);

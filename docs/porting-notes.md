@@ -946,3 +946,34 @@ Fixture target: 4-5 scenarios. Run-evals total moves from 126 to ~131 once Schem
 - Legacy XOR cipher: the `enc:` decrypt path is a backward-compat tail. Worth porting for migration parity, but the eval fixture for it can use a known XOR'd input + key.
 
 No source changes this commit — plan only.
+
+---
+
+## 2026-05-08 — SchemaCleanr port (Codex first-pass)
+
+- Ported Rust `zeroclaw-api/src/schema.rs`'s `SchemaCleanr` surface as a standalone Zig API module under `zig/src/api/`, deliberately not wired into Ollama `convertTools`. Production provider outputs therefore stay byte-identical until the planned follow-up commit opts into cleaning.
+- New public Zig API in `zig/src/api/schema.zig`: `CleaningStrategy` (`Gemini`, `Anthropic`, `OpenAI`, `Conservative`), `GEMINI_UNSUPPORTED_KEYWORDS`, `SCHEMA_META_KEYS`, `cleanForGemini`, `cleanForAnthropic`, `cleanForOpenai`, `clean`, `validate`, plus `cloneJsonValue` / `freeJsonValue` for caller-owned `std.json.Value` trees. `zig/src/api/root.zig` re-exports the module and `zig/src/root.zig` now exposes `pub const api`.
+- The recursive transform mirrors Rust ordering: `$ref` resolution first, `anyOf`/`oneOf` simplification second, then unsupported-key filtering with the same per-key special cases (`const` to single-item `enum`, skip sibling `type` when union exists, type-array null stripping, `properties`, `items`, and `anyOf`/`oneOf`/`allOf` recursion).
+- `$defs` and `definitions` are flattened into `std.StringHashMap(std.json.Value)`. Values and keys are allocator-owned clones during cleaning, then freed before returning. For `ref_stack`, Zig uses `std.StringHashMap(void)` with allocator-owned `$ref` string keys and `fetchRemove` to free each key after recursion; this is the only ownership-shaped divergence from Rust's `HashSet<String>`, not a behavioral one.
+- `$ref` quirks preserved: local refs parse only `#/$defs/` and `#/definitions/`; JSON Pointer decoding uses a single-pass `~0`/`~1` lookahead; unresolvable refs and cycle breaks return `{}` plus metadata from the original ref-bearing object, not from the target definition.
+- Union quirks preserved: `try_simplify_union` only returns when stripping null leaves one variant or all remaining variants are same-typed literals; otherwise default `clean_object` keeps the cleaned union array. `is_null_schema` accepts `{const:null}`, exactly `{enum:[null]}`, and `{type:"null"}`. `allOf` recurses but never triggers simplification.
+- Type-array quirks preserved: `"null"` entries are stripped, zero remaining entries become the string `"null"`, one remaining entry unwraps, and multiple entries stay an array. `const` converts to `enum` recursively, including nested `properties`.
+- Strategy constants mirror the Rust source exactly. Note: the brief called Gemini's list "22 keywords", but `schema.rs:58-85` currently contains 20 entries; Zig preserves the source-of-truth list verbatim.
+- Added a standalone `schema` eval subsystem:
+  - Rust runner: `eval-tools/src/bin/eval-schema.rs`, using public `zeroclaw_api::schema::{SchemaCleanr, CleaningStrategy}` only.
+  - Zig runner: `zig/src/tools/eval_schema.zig`, using allocator-managed `std.json.Value` input and `schema.freeJsonValue` output cleanup.
+  - Driver entry: `schema` with `scenario-*/input.jsonl`, `eval-schema`, JSONL mode.
+- Added seven fixture scenarios under `evals/fixtures/schema/`: unsupported-keyword strategy differences plus an end-to-end mixed schema; `$defs`/`definitions`/escaped-pointer refs; cycle detection; union simplification; type-array cleanup; const-to-enum; validate normalization. Full eval count is now 133 inputs (126 previous + 7 schema).
+- The mixed schema line in `scenario-strip-unsupported-keywords` covers refs + unions + type arrays + const + unsupported keywords together. Across the scenario, all four Rust strategy arms plus the public clean-for-provider wrappers are exercised.
+- `std.json.ObjectMap` in Zig 0.14.1 is `std.StringArrayHashMap(std.json.Value)`, observed in the stdlib source (`std/json/dynamic.zig`). This preserves insertion order like Rust's `serde_json::Map`. The cleaner inserts keys in input iteration order modulo dropped keywords and intentional `const` -> `enum` renaming; Python canonicalization still sorts keys for byte-equal eval output.
+- No Rust behavior changes were needed. `eval-tools/Cargo.toml` now depends directly on `zeroclaw-api` so the eval runner can call the existing public SchemaCleanr API. No visibility widenings were required.
+- Verification:
+  - `cd zig && zig build` — clean.
+  - `cd zig && zig build test --summary all` — `65/65 tests passed` (baseline 53 + 11 SchemaCleanr unit tests + the new `api/root.zig` refAllDecls test).
+  - `cargo build --manifest-path eval-tools/Cargo.toml --release` — release build finished.
+  - `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` — `783 passed, 0 failed, 1 doctest ignored` (unchanged).
+  - `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-api --release` — `29 passed, 0 failed`; doc test `schema` passed.
+  - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all fixtures OK; counts by subsystem: parser 86, memory 3, dispatcher 3, providers 25, oauth 9, schema 7, total 133.
+- Zig 0.14.1 stdlib gaps/choices: no `std.json.ObjectMap` ordering gap found. Local clone/free helpers live in `api/schema.zig` instead of importing parser helpers, keeping the standalone API module independent and avoiding the earlier parser-types import collision pattern.
+- No pinned Rust quirks were left unpreserved. The only documented mismatch is the brief's Gemini keyword count (22 requested vs 20 present in the Rust source), resolved by mirroring Rust exactly.
+- Claude review note (post-first-pass): Codex's section initially appended at line 555 (between sections from May 6) despite the explicit "APPEND AT THE END" instruction in the brief. Claude reordered during review to chronological end. Brief instruction has now failed for 4 of 6 Codex first-passes; consider a hook or different anchor strategy for future briefs.

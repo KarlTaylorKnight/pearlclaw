@@ -1,0 +1,3 @@
+{"op":"clean_for_gemini","schema":{"$ref":"#/$defs/Name","description":"local name","$defs":{"Name":{"type":"string","minLength":1}}}}
+{"op":"clean_for_gemini","schema":{"$ref":"#/definitions/Age","title":"Age title","definitions":{"Age":{"type":"integer","minimum":0}}}}
+{"op":"clean_for_gemini","schema":{"$ref":"#/$defs/Foo~0Bar~1Baz","default":"fallback","$defs":{"Foo~Bar/Baz":{"type":"string","pattern":"^[A-Z]+$"}}}}

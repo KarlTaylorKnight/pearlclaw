@@ -68,6 +68,13 @@ SUBSYSTEMS = {
         "zig_bin": "eval-oauth",
         "jsonl": True,
     },
+    "schema": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-schema",
+        "zig_bin": "eval-schema",
+        "jsonl": True,
+    },
 }
 
 

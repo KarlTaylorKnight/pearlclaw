@@ -1,0 +1,3 @@
+{"op":"clean_for_gemini","result":{"description":"local name","type":"string"}}
+{"op":"clean_for_gemini","result":{"title":"Age title","type":"integer"}}
+{"op":"clean_for_gemini","result":{"default":"fallback","type":"string"}}

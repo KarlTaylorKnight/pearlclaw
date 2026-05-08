@@ -1,0 +1,3 @@
+{"op":"validate","schema":{"type":"object","properties":{"name":{"type":"string"}}}}
+{"op":"validate","schema":{"properties":{"name":{"type":"string"}}}}
+{"op":"validate","schema":{"type":"object"}}

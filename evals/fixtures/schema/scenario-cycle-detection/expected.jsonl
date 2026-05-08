@@ -1,0 +1,1 @@
+{"op":"clean_for_gemini","result":{"properties":{"root":{"description":"root ref","properties":{"b":{"properties":{"a":{"default":null}},"title":"B ref","type":"object"}},"type":"object"}},"type":"object"}}

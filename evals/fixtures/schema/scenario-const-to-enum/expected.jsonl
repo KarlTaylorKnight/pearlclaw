@@ -1,0 +1,2 @@
+{"op":"clean_for_openai","result":{"description":"fixed","enum":["x"],"type":"string"}}
+{"op":"clean_for_openai","result":{"properties":{"count":{"enum":[3],"type":"integer"},"mode":{"enum":["fast"],"type":"string"}},"type":"object"}}

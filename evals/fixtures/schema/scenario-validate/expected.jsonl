@@ -1,0 +1,3 @@
+{"op":"validate","result":{"ok":true}}
+{"op":"validate","result":{"error":"InvalidSchema"}}
+{"op":"validate","result":{"ok":true}}

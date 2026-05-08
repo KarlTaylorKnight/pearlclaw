@@ -1,0 +1,4 @@
+{"op":"clean_for_gemini","result":{"description":"nullable string","type":"string"}}
+{"op":"clean_for_gemini","result":{"enum":["admin","user","guest"],"title":"role","type":"string"}}
+{"op":"clean_for_gemini","result":{"anyOf":[{"properties":{"a":{"type":"string"}},"type":"object"},{"properties":{"b":{"type":"integer"}},"type":"object"}],"description":"mixed object variants"}}
+{"op":"clean_for_gemini","result":{"default":"solo","enum":["solo"],"type":"string"}}

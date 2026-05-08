@@ -1,0 +1,1 @@
+{"op":"clean_for_gemini","schema":{"type":"object","properties":{"root":{"$ref":"#/$defs/A","description":"root ref"}},"$defs":{"A":{"type":"object","properties":{"b":{"$ref":"#/$defs/B","title":"B ref"}}},"B":{"type":"object","properties":{"a":{"$ref":"#/$defs/A","default":null}}}}}}

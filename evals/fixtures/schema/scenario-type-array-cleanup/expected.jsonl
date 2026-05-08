@@ -1,0 +1,4 @@
+{"op":"clean_for_gemini","result":{"description":"nullable string","type":"string"}}
+{"op":"clean_for_gemini","result":{"description":"null only","type":"null"}}
+{"op":"clean_for_gemini","result":{"description":"two types","type":["string","integer"]}}
+{"op":"clean_for_gemini","result":{"anyOf":[{"properties":{"a":{"type":"string"}},"type":"object"},{"properties":{"b":{"type":"integer"}},"type":"object"}],"description":"union owns type"}}
