@@ -860,3 +860,89 @@ Ran in parallel with Codex's OAuth Phase 2. Closes the `list_models` deferral fr
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (all fixtures OK; total inputs now 126: 86 parser + 3 memory + 3 dispatcher + 12 Ollama provider + 13 OpenAI provider + 9 oauth).
 
 Phase 3-C candidates (not started): SchemaCleanr (`zeroclaw-api/src/schema.rs` is 844 LOC — needs its own Codex chunk; closes the divergence Phase 3-A documented for Ollama tool conversion), multimodal image extraction (`zeroclaw-providers/src/multimodal.rs` is 935 LOC — Codex chunk; finishes Phase 2A's Ollama TODO stub), `zeroclaw-config` port (substantial; unblocks OAuth Phase 3 + agent loop), agent-loop slice (`runtime/agent/loop_.rs` is 282 KB monolithic — needs careful slicing).
+
+---
+
+## 2026-05-08 — zeroclaw-config scouting + Phase 4-A unblock plan (Claude direct)
+
+Scouting performed in parallel with Codex's SchemaCleanr port. Goal: figure out the smallest portable subset of `rust/crates/zeroclaw-config/` that unblocks OAuth Phase 3 (AuthProfilesStore + AuthService) without porting the full crate.
+
+### Crate scale
+
+`zeroclaw-config` is **~26,200 LOC across 20 files**. Breakdown:
+- `schema.rs` — 18,036 LOC. The full Config struct with every option, nested types, derive macros. Massive.
+- `secrets.rs` — 905 LOC. `SecretStore` (ChaCha20-Poly1305 with key in `~/.zeroclaw/.secret_key`).
+- `policy.rs` — 3,674 LOC. SecurityPolicy + ACL evaluation.
+- `pairing.rs` — 753 LOC. Device pairing.
+- `cost/tracker.rs` — 566 LOC. Token-cost accounting.
+- `scattered_types.rs` — 558 LOC. Misc structs.
+- `migration.rs` — 369 LOC. Config schema migrations.
+- Several smaller files (workspace, platform, helpers, traits, etc.) totaling ~1,600 LOC.
+
+Porting all of it is a multi-week effort. Most of it is irrelevant to OAuth Phase 3.
+
+### What OAuth Phase 3 actually needs (minimum)
+
+Audit of `rust/crates/zeroclaw-providers/src/auth/{mod,profiles}.rs`:
+- `auth/profiles.rs:11` — `use zeroclaw_config::secrets::SecretStore`
+- `auth/mod.rs:16` — `use zeroclaw_config::schema::Config`
+
+That's **two imports**. Reading the call sites:
+- `SecretStore::new(state_dir, encrypt_secrets)` + `encrypt`/`decrypt`/`decrypt_and_migrate` — used by `AuthProfilesStore` to encrypt the `token_set` field of each profile before persisting to disk.
+- `Config` is consumed via `AuthService::from_config(config)` which reads exactly TWO fields: `state_dir_from_config(config)` (a helper that resolves a path) and `config.secrets.encrypt` (a bool). That's the entire Config touch surface for auth.
+
+The rest of `Config` (model providers, channels, policies, autonomy, cost tracker, pairing) has no auth consumer and is irrelevant for Phase 4-A.
+
+### Phase 4-A scope (the unblock)
+
+Port SecretStore to Zig + define a minimal `AuthConfig` substitute that captures only what auth needs. Skip the 18K-line `Config` schema entirely.
+
+In:
+- `zig/src/api/secrets.zig` (~300 LOC port) — `SecretStore` struct with:
+  - `init(zeroclaw_dir, enabled)` constructor
+  - `encrypt(plaintext) -> ![]u8` returning `enc2:<hex(nonce ‖ ciphertext ‖ tag)>` or plaintext if disabled
+  - `decrypt(value) -> ![]u8` — handles `enc2:` (ChaCha20-Poly1305), `enc:` (legacy XOR for backward compat), no-prefix (passthrough)
+  - `decrypt_and_migrate(value) -> !{ plaintext, migrated_value: ?[]u8 }` — auto-upgrade from enc: to enc2:
+  - Private `loadOrCreateKey()` — reads `~/.zeroclaw/.secret_key` with 0600 permissions, creates if missing
+- A minimal `AuthConfig` substitute either:
+  - Inline at `zig/src/providers/auth/types.zig`: `pub const AuthConfig = struct { state_dir: []const u8, encrypt_secrets: bool };` (~10 LOC)
+  - OR a free helper `auth.configFromZeroclawDir(zeroclaw_dir, enabled)` that constructs the equivalent inputs.
+  - Decision: pick whichever feels less invasive when Phase 3 lands. The plan-only commit doesn't need to choose.
+
+Out (deferred to later phases):
+- `Config` schema port (Phase 4-B+, ~18K LOC, needs its own multi-week plan and likely Codex slicing).
+- `SecurityPolicy` (Phase 4-C, depends on Config).
+- `pairing.rs`, `cost/tracker.rs`, `migration.rs`, `workspace.rs`, `platform/*` — all out of Phase 4-A scope. Most need their consumers ported first.
+- The `Configurable` derive macro shim (lib.rs:21-30) — only relevant once Config schema lands.
+
+### Eval contract for Phase 4-A
+
+Eval ops on a new `secrets` subsystem (or under `oauth` since they're auth-adjacent — pick one):
+- `encrypt_decrypt_roundtrip` — given a plaintext + key, encrypt produces `enc2:` prefix, decrypt round-trips.
+- `decrypt_legacy_enc` — given an enc:-prefixed value, decrypt produces plaintext (test backward compat).
+- `decrypt_passthrough` — no prefix, return as-is.
+- `migrate_enc_to_enc2` — `decrypt_and_migrate` on an `enc:` value returns plaintext + new `enc2:` form.
+
+Ciphertext is non-deterministic (random nonce per encrypt), so `encrypt_decrypt_roundtrip` tests the round-trip not byte-equality of the ciphertext. Rust + Zig both encrypt with random nonces, decrypt each other's output (cross-language ciphertext compatibility test using fixed key bytes).
+
+Fixture target: 4-5 scenarios. Run-evals total moves from 126 to ~131 once SchemaCleanr lands and Phase 4-A lands separately.
+
+### Files Phase 4-A creates / modifies
+
+- New: `zig/src/api/secrets.zig`, `zig/src/api/root.zig` (or extend the existing api/ directory if SchemaCleanr already created one), `zig/src/tools/eval_secrets.zig`, `eval-tools/src/bin/eval-secrets.rs`, fixtures.
+- Modify: `zig/src/root.zig` (re-export api), `zig/build.zig` (eval-secrets exe), `evals/driver/run_evals.py` (secrets subsystem entry).
+- Rust visibility: `SecretStore` and its methods are already `pub`. No widenings expected — verify only.
+
+### Workforce
+
+- Phase 4-A is a Codex first-pass candidate (port + crypto). Comparable scope to OAuth Phase 1 (~600 LOC of Zig with crypto + file I/O + tests + 4-5 fixtures + Rust eval bin).
+- Or Claude-direct if Codex bandwidth is committed elsewhere. The crypto port mostly maps stdlib → stdlib (`std.crypto.aead.chacha_poly` exists in Zig 0.14.1).
+
+### Pinned questions for review
+
+- `chacha20poly1305` Rust crate vs Zig's `std.crypto.aead.chacha_poly.ChaCha20Poly1305`: same algorithm, may differ in API shape. Need to verify nonce/tag/key sizes match exactly (12/16/32 bytes per the spec — both should align).
+- `~/.zeroclaw/.secret_key` resolution in Zig: `std.fs.getAppDataDir` or hand-roll `$HOME` + suffix. Pick the simplest cross-platform path; the Rust uses `dirs::home_dir()`.
+- File mode 0600 on macOS/Linux via `std.fs.File.setMode` or open-with-mode flag. On Windows, ACLs are different — Phase 4-A can document the gap and skip Windows.
+- Legacy XOR cipher: the `enc:` decrypt path is a backward-compat tail. Worth porting for migration parity, but the eval fixture for it can use a known XOR'd input + key.
+
+No source changes this commit — plan only.
