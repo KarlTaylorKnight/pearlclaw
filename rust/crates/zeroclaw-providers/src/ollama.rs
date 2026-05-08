@@ -692,6 +692,22 @@ impl OllamaProvider {
     }
 }
 
+/// Parse Ollama's `/api/tags` response body and return the list of model
+/// names. Mirrors the eval-only pattern (sync, no I/O); the live HTTP
+/// path is `OllamaProvider::list_models` at line 960.
+pub fn parse_models_response_body(body: &str) -> anyhow::Result<Vec<String>> {
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        models: Vec<Entry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        name: String,
+    }
+    let resp: Resp = serde_json::from_str(body)?;
+    Ok(resp.models.into_iter().map(|e| e.name).collect())
+}
+
 #[async_trait]
 impl Provider for OllamaProvider {
     // ── Provider-family defaults ──

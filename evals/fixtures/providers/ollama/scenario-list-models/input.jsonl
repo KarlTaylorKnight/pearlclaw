@@ -1,0 +1,2 @@
+{"provider":"ollama","op":"parse_models_response","body":"{\"models\":[{\"name\":\"llama3.1:8b\"},{\"name\":\"qwen2.5:7b\"}]}"}
+{"provider":"ollama","op":"parse_models_response","body":"{\"models\":[]}"}

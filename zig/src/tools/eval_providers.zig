@@ -85,6 +85,12 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
         try runOpenAiConvertTools(allocator, parsed.value, writer);
     } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "parse_native_tool_spec")) {
         try runOpenAiParseNativeToolSpec(allocator, parsed.value, writer);
+    } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "parse_models_response")) {
+        const body = getString(parsed.value, "body") orelse return EvalError.InvalidScenario;
+        try runParseModelsResponse(allocator, "ollama", body, writer);
+    } else if (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, op, "parse_models_response")) {
+        const body = getString(parsed.value, "body") orelse return EvalError.InvalidScenario;
+        try runParseModelsResponse(allocator, "openai", body, writer);
     } else if (std.mem.eql(u8, provider, "ollama") and std.mem.eql(u8, op, "parse_chat_response")) {
         const body = getString(parsed.value, "body") orelse return EvalError.InvalidScenario;
         var result = try ollama.parseChatResponseBody(allocator, body);
@@ -391,6 +397,29 @@ fn runOpenAiParseNativeToolSpec(allocator: std.mem.Allocator, op_value: std.json
     try writer.writeAll("{\"op\":\"parse_native_tool_spec\",\"result\":");
     try openai.client.writeNativeToolSpecJson(allocator, owned, writer);
     try writer.writeAll("}\n");
+}
+
+fn runParseModelsResponse(
+    allocator: std.mem.Allocator,
+    provider: []const u8,
+    body: []const u8,
+    writer: anytype,
+) !void {
+    const models = if (std.mem.eql(u8, provider, "ollama"))
+        try ollama.parseModelsResponseBody(allocator, body)
+    else
+        try openai.parseModelsResponseBody(allocator, body);
+    defer {
+        for (models) |name| allocator.free(name);
+        allocator.free(models);
+    }
+
+    try writer.writeAll("{\"op\":\"parse_models_response\",\"result\":[");
+    for (models, 0..) |name, i| {
+        if (i != 0) try writer.writeByte(',');
+        try std.json.stringify(name, .{}, writer);
+    }
+    try writer.writeAll("]}\n");
 }
 
 fn chatMessagesFromField(

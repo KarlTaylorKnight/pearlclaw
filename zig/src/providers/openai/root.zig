@@ -5,6 +5,7 @@ pub const OpenAiProvider = client.OpenAiProvider;
 pub const adjustTemperatureForModel = client.adjustTemperatureForModel;
 pub const effectiveContent = client.effectiveContent;
 pub const parseChatResponseBody = client.parseChatResponseBody;
+pub const parseModelsResponseBody = client.parseModelsResponseBody;
 pub const parseNativeResponse = client.parseNativeResponse;
 pub const parseNativeResponseBody = client.parseNativeResponseBody;
 pub const parseNativeApiChatResponseBody = client.parseNativeApiChatResponseBody;

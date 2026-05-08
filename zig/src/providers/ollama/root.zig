@@ -10,6 +10,7 @@ pub const parseToolArguments = client.parseToolArguments;
 pub const formatToolCallsForLoop = client.formatToolCallsForLoop;
 pub const extractToolNameAndArgs = client.extractToolNameAndArgs;
 pub const parseChatResponseBody = client.parseChatResponseBody;
+pub const parseModelsResponseBody = client.parseModelsResponseBody;
 pub const ProviderChatRequest = client.ProviderChatRequest;
 
 pub const ChatRequest = types.ChatRequest;

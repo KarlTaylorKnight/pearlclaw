@@ -1,0 +1,2 @@
+{"provider":"openai","op":"parse_models_response","body":"{\"data\":[{\"id\":\"gpt-4o\",\"object\":\"model\"},{\"id\":\"gpt-4o-mini\",\"object\":\"model\"},{\"id\":\"o3\",\"object\":\"model\"}]}"}
+{"provider":"openai","op":"parse_models_response","body":"{\"data\":[]}"}

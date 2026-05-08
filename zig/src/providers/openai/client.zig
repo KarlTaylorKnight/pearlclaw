@@ -273,6 +273,62 @@ pub const OpenAiProvider = struct {
         return .{ .ptr = @ptrCast(self), .vtable = &openai_vtable };
     }
 
+    /// GET `{base_url}/models` with bearer auth. Returns the list of model
+    /// IDs from `data[].id`. Phase 1 deferred this; Phase 3-B ports the
+    /// direct-API path (Rust delegates to the models.dev catalog at
+    /// openai.rs:586-590; the Zig port hits OpenAI's official endpoint
+    /// directly for parity with Ollama's listModels shape).
+    pub fn listModels(
+        self: *const OpenAiProvider,
+        allocator: std.mem.Allocator,
+    ) ![][]u8 {
+        const credential = self.credential orelse return error.OpenAiApiKeyNotSet;
+
+        const url = try std.fmt.allocPrint(allocator, "{s}/models", .{self.base_url});
+        defer allocator.free(url);
+        const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{credential});
+        defer allocator.free(bearer);
+
+        var body = std.ArrayList(u8).init(allocator);
+        defer body.deinit();
+        var client = std.http.Client{ .allocator = allocator };
+        defer client.deinit();
+
+        const result = try client.fetch(.{
+            .location = .{ .url = url },
+            .method = .GET,
+            .response_storage = .{ .dynamic = &body },
+            .headers = .{ .authorization = .{ .override = bearer } },
+        });
+        if (result.status.class() != .success) return error.OpenAiHttpError;
+
+        return try parseModelsResponseBody(allocator, body.items);
+    }
+
+    /// GET `{base_url}/models` with bearer auth, ignore the body. Mirrors
+    /// Rust at openai.rs:574-584. No-op when no credential is set.
+    pub fn warmup(self: *const OpenAiProvider, allocator: std.mem.Allocator) !void {
+        const credential = self.credential orelse return;
+
+        const url = try std.fmt.allocPrint(allocator, "{s}/models", .{self.base_url});
+        defer allocator.free(url);
+        const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{credential});
+        defer allocator.free(bearer);
+
+        var body = std.ArrayList(u8).init(allocator);
+        defer body.deinit();
+        var client = std.http.Client{ .allocator = allocator };
+        defer client.deinit();
+
+        const result = try client.fetch(.{
+            .location = .{ .url = url },
+            .method = .GET,
+            .response_storage = .{ .dynamic = &body },
+            .headers = .{ .authorization = .{ .override = bearer } },
+        });
+        if (result.status.class() != .success) return error.OpenAiHttpError;
+    }
+
     fn chatWithToolsWithChoice(
         self: *const OpenAiProvider,
         allocator: std.mem.Allocator,
@@ -880,6 +936,31 @@ pub fn parseChatResponseBody(allocator: std.mem.Allocator, body: []const u8) !di
         .reasoning_content = reasoning,
         .owned = true,
     };
+}
+
+/// Parse OpenAI's `/v1/models` response: `{"data": [{"id": "..."}, ...]}`.
+/// Returns the list of model IDs; caller owns each ID and the outer slice.
+pub fn parseModelsResponseBody(allocator: std.mem.Allocator, body: []const u8) ![][]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    const data_value = getObjectField(parsed.value, "data") orelse return error.InvalidJson;
+    if (data_value != .array) return error.InvalidJson;
+
+    var ids = std.ArrayList([]u8).init(allocator);
+    errdefer {
+        for (ids.items) |id| allocator.free(id);
+        ids.deinit();
+    }
+
+    for (data_value.array.items) |item| {
+        if (item != .object) return error.InvalidJson;
+        const id = item.object.get("id") orelse return error.InvalidJson;
+        if (id != .string) return error.InvalidJson;
+        try ids.append(try allocator.dupe(u8, id.string));
+    }
+
+    return try ids.toOwnedSlice();
 }
 
 pub fn writeNativeMessagesJson(

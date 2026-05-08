@@ -405,6 +405,45 @@ pub const OllamaProvider = struct {
         return try parseApiChatResponseBody(allocator, body.items);
     }
 
+    /// GET `{base_url}/api/tags`. Bearer auth iff the endpoint is non-local
+    /// AND `api_key` is set. Returns the model name list. Mirrors Rust at
+    /// ollama.rs:960-983.
+    pub fn listModels(
+        self: *const OllamaProvider,
+        allocator: std.mem.Allocator,
+    ) ![][]u8 {
+        const url = try std.fmt.allocPrint(allocator, "{s}/api/tags", .{self.base_url});
+        defer allocator.free(url);
+
+        var body = std.ArrayList(u8).init(allocator);
+        defer body.deinit();
+
+        var client = std.http.Client{ .allocator = allocator };
+        defer client.deinit();
+
+        var bearer: ?[]u8 = null;
+        defer if (bearer) |value| allocator.free(value);
+        const auth_header: std.http.Client.Request.Headers.Value = blk: {
+            if (shouldUseAuth(self)) {
+                if (self.api_key) |key| {
+                    bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{key});
+                    break :blk .{ .override = bearer.? };
+                }
+            }
+            break :blk .default;
+        };
+
+        const result = try client.fetch(.{
+            .location = .{ .url = url },
+            .method = .GET,
+            .response_storage = .{ .dynamic = &body },
+            .headers = .{ .authorization = auth_header },
+        });
+        if (result.status.class() != .success) return error.OllamaHttpError;
+
+        return try parseModelsResponseBody(allocator, body.items);
+    }
+
     pub fn provider(self: *OllamaProvider) provider_handle.Provider {
         return .{ .ptr = @ptrCast(self), .vtable = &ollama_vtable };
     }
@@ -1043,6 +1082,32 @@ pub fn parseChatResponseBody(allocator: std.mem.Allocator, body: []const u8) !di
     var api_response = try parseApiChatResponseBody(allocator, body);
     defer api_response.deinit(allocator);
     return try apiResponseToChatResponse(allocator, api_response, "ollama");
+}
+
+/// Parse Ollama's `/api/tags` response: `{"models": [{"name": "..."}, ...]}`.
+/// Returns the list of model names; caller owns each name and the outer
+/// slice. Mirrors Rust at ollama.rs:972-982.
+pub fn parseModelsResponseBody(allocator: std.mem.Allocator, body: []const u8) ![][]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    const models_value = getObjectField(parsed.value, "models") orelse return error.InvalidJson;
+    if (models_value != .array) return error.InvalidJson;
+
+    var names = std.ArrayList([]u8).init(allocator);
+    errdefer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit();
+    }
+
+    for (models_value.array.items) |item| {
+        if (item != .object) return error.InvalidJson;
+        const name = item.object.get("name") orelse return error.InvalidJson;
+        if (name != .string) return error.InvalidJson;
+        try names.append(try allocator.dupe(u8, name.string));
+    }
+
+    return try names.toOwnedSlice();
 }
 
 pub fn apiResponseToChatResponse(

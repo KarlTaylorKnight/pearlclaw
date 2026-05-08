@@ -823,3 +823,40 @@ Lifts the raw-JSON tool boundary that Phase 2A's eval contract carried as a TODO
   - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all fixtures OK. The OAuth delta is 7 + 2 = 9 OAuth fixture dirs. This working tree also contains two provider `scenario-list-models` fixture dirs, so the observed full-suite total is 126 fixture inputs rather than the Phase 1 note's 122 + 2 target.
 - Zig 0.14.1 stdlib gaps/choices: no `std.http.Client.fetch` body-framing gap surfaced for form POSTs; `fetch` sets `content_length` from payload length. Loopback response framing is manual to match Rust's short fixed response. Accept timeout is manual nonblocking polling because std.net has no direct `accept(timeout)` helper.
 - Live HTTP remains compile-checked but not eval-tested: `exchangeCodeForTokens`, `refreshAccessToken`, `startDeviceCodeFlow`, `pollDeviceCodeTokens`, and `receiveLoopbackCode` require OpenAI endpoints or local browser/socket integration. Phase 2 eval intentionally covers only the two offline helpers plus Zig unit tests for polling dispatch.
+
+---
+
+## 2026-05-08 — Phase 3-B list_models + warmup (Claude direct)
+
+Ran in parallel with Codex's OAuth Phase 2. Closes the `list_models` deferral from both providers' Phase 1 notes plus the OpenAI `warmup` deferral. Touches different files from Codex's auth work (no merge conflicts).
+
+### Surface
+
+- `OllamaProvider.listModels(allocator) -> ![][]u8` — GET `{base_url}/api/tags`. Bearer auth iff `shouldUseAuth(self)` (api_key set AND endpoint non-local). Mirrors Rust at `ollama.rs:960-983`.
+- `OpenAiProvider.listModels(allocator) -> ![][]u8` — GET `{base_url}/models` with `Authorization: Bearer`. Returns `error.OpenAiApiKeyNotSet` if no credential. Note: Rust delegates to `models_dev::list_models_for("openai")` (the no-auth catalog used by onboard); the Zig port hits `/v1/models` directly because that's the simpler, Ollama-shape-symmetric path. The catalog delegation can be added later if a runtime caller needs the no-auth path.
+- `OpenAiProvider.warmup(allocator) -> !void` — GET `{base_url}/models` with bearer iff credential present, ignore body. Mirrors Rust at `openai.rs:574-584`. Noop when no credential (matches Rust).
+- `parseModelsResponseBody(allocator, body) -> ![][]u8` exposed pub on both providers' `client.zig`. Returns owned slice of owned strings. Re-exported from `ollama/root.zig` and `openai/root.zig`.
+
+### Rust visibility-only widenings
+
+- New free `pub fn parse_models_response_body(body: &str) -> anyhow::Result<Vec<String>>` in each of `ollama.rs` and `openai.rs`. Self-contained `Resp`/`Entry` types (Ollama: `{models:[{name}]}`; OpenAI: `{data:[{id}]}`). Visibility-only: cargo test 783 / 0 / 1 doctest unchanged.
+
+### Eval
+
+- New op `parse_models_response` on both `ollama` and `openai` providers (Zig + Rust drivers). Routes to the per-provider `parse_models_response_body` helpers.
+- 2 new fixture dirs: `evals/fixtures/providers/ollama/scenario-list-models/` (2 lines: typical multi-model + empty) and `evals/fixtures/providers/openai/scenario-list-models/` (2 lines: typical with `object` field + empty). Both providers' parsers ignore unknown fields.
+- The HTTP-bound `listModels` and `warmup` themselves are not eval-tested — same Phase-1-shaped boundary (compile-checked, requires live OpenAI / local Ollama for runtime parity).
+
+### Notes
+
+- Ollama's `shouldUseAuth(self)` already existed (used by chat path); reused for `listModels` so the local-vs-remote bearer decision is consistent across endpoints.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — 53/53 tests passed (matches Codex Phase 2's count; my Phase 3-B's HTTP surface adds no compile-time tests because it's HTTP-bound; the `parse_models_response_body` helpers are exercised via the eval fixtures, not Zig unit tests).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release`.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored — unchanged).
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (all fixtures OK; total inputs now 126: 86 parser + 3 memory + 3 dispatcher + 12 Ollama provider + 13 OpenAI provider + 9 oauth).
+
+Phase 3-C candidates (not started): SchemaCleanr (`zeroclaw-api/src/schema.rs` is 844 LOC — needs its own Codex chunk; closes the divergence Phase 3-A documented for Ollama tool conversion), multimodal image extraction (`zeroclaw-providers/src/multimodal.rs` is 935 LOC — Codex chunk; finishes Phase 2A's Ollama TODO stub), `zeroclaw-config` port (substantial; unblocks OAuth Phase 3 + agent loop), agent-loop slice (`runtime/agent/loop_.rs` is 282 KB monolithic — needs careful slicing).

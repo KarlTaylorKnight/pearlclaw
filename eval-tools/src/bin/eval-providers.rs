@@ -126,6 +126,22 @@ fn main() -> Result<()> {
                 let result = run_openai_parse_native_tool_spec(&op_value);
                 write_result(&mut output, op, result);
             }
+            ("ollama", "parse_models_response") => {
+                let body = op_value
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .context("body missing")?;
+                let names = zeroclaw_providers::ollama::parse_models_response_body(body)?;
+                write_result(&mut output, op, serde_json::json!(names));
+            }
+            ("openai", "parse_models_response") => {
+                let body = op_value
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .context("body missing")?;
+                let ids = zeroclaw_providers::openai::parse_models_response_body(body)?;
+                write_result(&mut output, op, serde_json::json!(ids));
+            }
             ("ollama", "parse_chat_response") => {
                 let body = op_value
                     .get("body")

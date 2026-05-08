@@ -387,6 +387,22 @@ impl OpenAiProvider {
     }
 }
 
+/// Parse OpenAI's `/v1/models` response body and return the list of model
+/// IDs. Sync, eval-only; the live HTTP path delegates to `models_dev` in
+/// the Rust runtime, but the Zig port hits `/v1/models` directly.
+pub fn parse_models_response_body(body: &str) -> anyhow::Result<Vec<String>> {
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        data: Vec<Entry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        id: String,
+    }
+    let resp: Resp = serde_json::from_str(body)?;
+    Ok(resp.data.into_iter().map(|e| e.id).collect())
+}
+
 #[async_trait]
 impl Provider for OpenAiProvider {
     // ── Provider-family defaults ──
