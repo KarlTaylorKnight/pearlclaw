@@ -1,0 +1,1 @@
+{"op":"roundtrip_token_profile","encrypt_secrets":true,"key_hex":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f","now_unix_seconds":1700000000,"profile":{"provider":"openai","name":"api","token":"sk-token-123","account_id":"acct_api","workspace_id":"ws_api","metadata":{"source":"manual"}}}

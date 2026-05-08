@@ -1,0 +1,3 @@
+{"op":"select_profile_id","profiles":[{"provider":"openai-codex","name":"default"},{"provider":"openai-codex","name":"work"}],"active_map":{"openai-codex":"openai-codex:work"},"query_provider":"openai-codex","override":"default"}
+{"op":"select_profile_id","profiles":[{"provider":"openai-codex","name":"default"},{"provider":"openai-codex","name":"work"}],"active_map":{"openai-codex":"openai-codex:work"},"query_provider":"openai-codex","override":null}
+{"op":"select_profile_id","profiles":[{"provider":"openai-codex","name":"default"},{"provider":"openai-codex","name":"work"}],"active_map":{},"query_provider":"openai-codex","override":null}

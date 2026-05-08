@@ -13,7 +13,7 @@ Usage:
   python3 evals/driver/run_evals.py \\
       --rust eval-tools/target/release \\
       --zig zig/zig-out/bin \\
-      [--subsystem parser|memory|dispatcher|providers|oauth] \\
+      [--subsystem parser|memory|dispatcher|providers|oauth|schema|secrets|profiles] \\
       [--update-golden]   # only with --rust; rewrites *.expected.json from Rust output
 """
 
@@ -75,6 +75,22 @@ SUBSYSTEMS = {
         "zig_bin": "eval-schema",
         "jsonl": True,
     },
+    "secrets": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-secrets",
+        "zig_bin": "eval-secrets",
+        "jsonl": True,
+    },
+    "profiles": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-profiles",
+        "zig_bin": "eval-profiles",
+        "jsonl": True,
+        "normalize_timestamps": True,
+        "strip_tmp_ids": True,
+    },
 }
 
 
@@ -100,7 +116,20 @@ def normalize_memory_value(value, key: str | None = None):
     return value
 
 
-def canonicalize(blob: bytes, *, jsonl: bool = False, normalize_memory: bool = False) -> str:
+TMP_ID_RE = re.compile(r"zeroclaw-eval-[A-Za-z0-9_.:-]+-\d+-\d+")
+
+
+def normalize_tmp_ids(value):
+    if isinstance(value, dict):
+        return {k: normalize_tmp_ids(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize_tmp_ids(v) for v in value]
+    if isinstance(value, str):
+        return TMP_ID_RE.sub("zeroclaw-eval-<TMP>", value)
+    return value
+
+
+def canonicalize(blob: bytes, *, jsonl: bool = False, normalize_memory: bool = False, strip_tmp_ids: bool = False) -> str:
     """Parse JSON and re-emit with sorted keys / no whitespace.
 
     Rust's eval-parser already emits this form, but normalize defensively
@@ -117,11 +146,15 @@ def canonicalize(blob: bytes, *, jsonl: bool = False, normalize_memory: bool = F
             obj = json.loads(line)
             if normalize_memory:
                 obj = normalize_memory_value(obj)
+            if strip_tmp_ids:
+                obj = normalize_tmp_ids(obj)
             lines.append(json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         return "\n".join(lines)
     obj = json.loads(text)
     if normalize_memory:
         obj = normalize_memory_value(obj)
+    if strip_tmp_ids:
+        obj = normalize_tmp_ids(obj)
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -191,7 +224,8 @@ def run_subsystem(name: str, rust_dir: Path | None, zig_dir: Path | None,
             rust_out = canonicalize(
                 stdout,
                 jsonl=cfg.get("jsonl", False),
-                normalize_memory=(name == "memory"),
+                normalize_memory=(name == "memory" or cfg.get("normalize_timestamps", False)),
+                strip_tmp_ids=cfg.get("strip_tmp_ids", False),
             )
 
         if zig_bin and zig_bin.exists():
@@ -207,7 +241,8 @@ def run_subsystem(name: str, rust_dir: Path | None, zig_dir: Path | None,
             zig_out = canonicalize(
                 stdout,
                 jsonl=cfg.get("jsonl", False),
-                normalize_memory=(name == "memory"),
+                normalize_memory=(name == "memory" or cfg.get("normalize_timestamps", False)),
+                strip_tmp_ids=cfg.get("strip_tmp_ids", False),
             )
 
         if update_golden and rust_out is not None:

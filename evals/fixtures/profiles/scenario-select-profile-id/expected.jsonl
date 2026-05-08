@@ -1,0 +1,3 @@
+{"op":"select_profile_id","result":{"resolved_id":"openai-codex:default"}}
+{"op":"select_profile_id","result":{"resolved_id":"openai-codex:work"}}
+{"op":"select_profile_id","result":{"resolved_id":"openai-codex:default"}}

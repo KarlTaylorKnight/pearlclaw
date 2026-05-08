@@ -116,6 +116,32 @@ pub fn build(b: *std.Build) void {
     linkSqlite(b, eval_schema_exe);
     b.installArtifact(eval_schema_exe);
 
+    const eval_secrets_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_secrets.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_secrets_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_secrets_exe = b.addExecutable(.{
+        .name = "eval-secrets",
+        .root_module = eval_secrets_mod,
+    });
+    linkSqlite(b, eval_secrets_exe);
+    b.installArtifact(eval_secrets_exe);
+
+    const eval_profiles_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_profiles.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_profiles_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_profiles_exe = b.addExecutable(.{
+        .name = "eval-profiles",
+        .root_module = eval_profiles_mod,
+    });
+    linkSqlite(b, eval_profiles_exe);
+    b.installArtifact(eval_profiles_exe);
+
     // ─── Test step ───────────────────────────────────────────────────────
     const lib_unit_tests = b.addTest(.{ .root_module = zeroclaw_mod });
     linkSqlite(b, lib_unit_tests);

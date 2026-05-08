@@ -17,6 +17,7 @@ pub const memory = @import("memory/root.zig");
 pub const runtime = @import("runtime/root.zig");
 pub const providers = @import("providers/root.zig");
 pub const api = @import("api/root.zig");
+pub const auth_service = providers.auth.service;
 
 // Re-exports for ergonomics. Stable surface that the pilot will hold to.
 // Real types land here as each module's port reaches green.

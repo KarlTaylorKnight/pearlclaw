@@ -28,8 +28,17 @@ path = "src/bin/eval-oauth.rs"
 name = "eval-schema"
 path = "src/bin/eval-schema.rs"
 
+[[bin]]
+name = "eval-secrets"
+path = "src/bin/eval-secrets.rs"
+
+[[bin]]
+name = "eval-profiles"
+path = "src/bin/eval-profiles.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
+zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }
 zeroclaw-tool-call-parser = { path = "../rust/crates/zeroclaw-tool-call-parser" }
 zeroclaw-memory = { path = "../rust/crates/zeroclaw-memory" }
 zeroclaw-providers = { path = "../rust/crates/zeroclaw-providers" }

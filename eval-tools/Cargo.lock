@@ -443,6 +443,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "zeroclaw-api",
+ "zeroclaw-config",
  "zeroclaw-memory",
  "zeroclaw-providers",
  "zeroclaw-runtime",

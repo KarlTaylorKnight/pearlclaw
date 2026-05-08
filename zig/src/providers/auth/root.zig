@@ -2,6 +2,8 @@ pub const types = @import("types.zig");
 pub const oauth_common = @import("oauth_common.zig");
 pub const loopback = @import("loopback.zig");
 pub const openai_oauth = @import("openai_oauth.zig");
+pub const profiles = @import("profiles.zig");
+pub const service = @import("service.zig");
 
 pub const PkceState = oauth_common.PkceState;
 pub const QueryParams = oauth_common.QueryParams;
@@ -10,6 +12,11 @@ pub const TokenSet = types.TokenSet;
 pub const TokenResponseForEval = types.TokenResponseForEval;
 pub const DeviceCodeStart = types.DeviceCodeStart;
 pub const OAuthErrorResponse = types.OAuthErrorResponse;
+pub const AuthProfile = profiles.AuthProfile;
+pub const AuthProfileKind = profiles.AuthProfileKind;
+pub const AuthProfilesData = profiles.AuthProfilesData;
+pub const AuthProfilesStore = profiles.AuthProfilesStore;
+pub const AuthService = service.AuthService;
 pub const DeviceCodeErrorKind = openai_oauth.DeviceCodeErrorKind;
 pub const DeviceCodeErrorClassification = openai_oauth.DeviceCodeErrorClassification;
 
@@ -28,6 +35,11 @@ pub const startDeviceCodeFlow = openai_oauth.startDeviceCodeFlow;
 pub const pollDeviceCodeTokens = openai_oauth.pollDeviceCodeTokens;
 pub const receiveLoopbackCode = openai_oauth.receiveLoopbackCode;
 pub const classifyDeviceCodeError = openai_oauth.classifyDeviceCodeError;
+pub const profileId = profiles.profileId;
+pub const normalizeProvider = service.normalizeProvider;
+pub const defaultProfileId = service.defaultProfileId;
+pub const resolveRequestedProfileId = service.resolveRequestedProfileId;
+pub const selectProfileId = service.selectProfileId;
 
 test {
     @import("std").testing.refAllDecls(@This());

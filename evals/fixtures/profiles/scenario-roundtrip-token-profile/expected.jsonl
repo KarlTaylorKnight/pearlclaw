@@ -1,0 +1,1 @@
+{"op":"roundtrip_token_profile","result":{"profile":{"account_id":"acct_api","created_at":"<TS>","id":"openai:api","kind":"token","metadata":{"source":"manual"},"profile_name":"api","provider":"openai","token":"sk-token-123","token_set":null,"updated_at":"<TS>","workspace_id":"ws_api"}}}
