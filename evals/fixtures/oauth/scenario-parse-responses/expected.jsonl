@@ -1,0 +1,6 @@
+{"op":"parse_token_response","result":{"access_token":"access","expires_in_seconds":3600,"id_token":"id","refresh_token":"refresh","scope":"openid profile","token_type":"Bearer"}}
+{"op":"parse_token_response","result":{"access_token":"access-only"}}
+{"op":"parse_token_response","result":{"access_token":"zero","expires_in_seconds":0}}
+{"op":"parse_device_code_response","result":{"device_code":"dev-123","expires_in":900,"interval":1,"message":"Open the URL","user_code":"USER-123","verification_uri":"https://auth.example/activate","verification_uri_complete":"https://auth.example/activate?user_code=USER-123"}}
+{"op":"parse_oauth_error","result":{"error":"slow_down","error_description":"try later"}}
+{"op":"parse_oauth_error","result":{"error":"authorization_pending"}}

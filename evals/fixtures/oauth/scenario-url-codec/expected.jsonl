@@ -1,0 +1,9 @@
+{"op":"url_encode","result":"hello%20world"}
+{"op":"url_encode","result":"a%3Db%26c%3Dd"}
+{"op":"url_encode","result":"plus%2Bspace%20%21"}
+{"op":"url_decode","result":"hello world"}
+{"op":"url_decode","result":"hello world+again"}
+{"op":"url_decode","result":"mixed/case/percent%ZZ"}
+{"op":"url_encode","result":"snowman%20%E2%98%83"}
+{"op":"url_decode","result":"snowman ☃"}
+{"op":"parse_query_params","result":{"a":"1","encoded":"a=b","space":"hello world","z":"final"}}

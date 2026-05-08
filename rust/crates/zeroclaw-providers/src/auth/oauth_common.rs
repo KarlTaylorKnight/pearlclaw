@@ -33,6 +33,24 @@ pub fn generate_pkce_state() -> PkceState {
     }
 }
 
+/// Build deterministic PKCE state from caller-supplied byte seeds.
+///
+/// This mirrors `generate_pkce_state` without reading from `OsRng`; it is
+/// used by the cross-language eval harness.
+pub fn pkce_state_from_seed(verifier_seed: &[u8], state_seed: &[u8]) -> PkceState {
+    let code_verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(verifier_seed);
+    let digest = Sha256::digest(code_verifier.as_bytes());
+    let code_challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
+    let state_len = state_seed.len().min(24);
+    let state = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&state_seed[..state_len]);
+
+    PkceState {
+        code_verifier,
+        code_challenge,
+        state,
+    }
+}
+
 /// Generate a cryptographically random base64url-encoded string.
 pub fn random_base64url(byte_len: usize) -> String {
     use chacha20poly1305::aead::{OsRng, rand_core::RngCore};

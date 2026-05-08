@@ -1,0 +1,7 @@
+{"op":"parse_code_from_redirect","input":"http://127.0.0.1:1455/auth/callback?code=abc123&state=xyz","expected_state":"xyz"}
+{"op":"parse_code_from_redirect","input":"raw-code"}
+{"op":"parse_code_from_redirect","input":"/auth/callback?code=x&state=a","expected_state":"b"}
+{"op":"parse_code_from_redirect","input":"/auth/callback?error=access_denied&error_description=user+cancelled","expected_state":"xyz"}
+{"op":"parse_code_from_redirect","input":"/auth/callback?state=xyz","expected_state":"xyz"}
+{"op":"parse_code_from_redirect","input":"?code=solo"}
+{"op":"parse_code_from_redirect","input":"/auth/callback?code=x&error=access_denied&state=bad","expected_state":"expected"}

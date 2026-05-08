@@ -764,3 +764,35 @@ Lifts the raw-JSON tool boundary that Phase 2A's eval contract carried as a TODO
 - `cargo build --manifest-path eval-tools/Cargo.toml --release`.
 - `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` (783 passed, 0 failed, 1 doctest ignored — unchanged).
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` (115 fixtures all OK: 86 parser + 3 memory + 3 dispatcher + 11 Ollama provider + 12 OpenAI provider).
+
+---
+
+## 2026-05-08 — OpenAI OAuth Phase 1 first-pass (Codex)
+
+- Ported the dependency-clean OAuth Phase 1 surface to Zig under `zig/src/providers/auth/`: PKCE state generation, deterministic PKCE-from-seed, base64url-no-pad helpers, RFC 3986 URL encode/decode, sorted query parsing, OpenAI OAuth constants, authorize URL/body builders, token/device/error response parsers, redirect-code parsing, and JWT account/expiry extraction.
+- Added minimal auth data envelopes in `zig/src/providers/auth/types.zig`: `TokenSet` with `expires_at_utc_seconds`, `TokenResponseForEval` with deterministic `expires_in_seconds`, `DeviceCodeStart`, and `OAuthErrorResponse`. No chrono/wall-clock abstraction was introduced; production-shaped token parsing takes a synthetic `now_unix_seconds`, while eval parsing carries `expires_in` verbatim.
+- Reused Zig 0.14.1 stdlib primitives directly: `std.crypto.random.bytes`, `std.crypto.hash.sha2.Sha256`, `std.base64.url_safe_no_pad`, and `std.json.parseFromSlice`. URL decode remains hand-rolled to preserve Rust's `+` → space behavior and invalid-percent handling; `std.unicode.fmtUtf8` mirrors Rust's `String::from_utf8_lossy` for decoded bytes.
+- Rust-side changes stayed visibility/helper-only in `rust/crates/zeroclaw-providers/src/auth/`: added `pkce_state_from_seed`, form-body builder helpers, sync parse helpers for token/device/OAuth-error bodies, and a deterministic `TokenResponseForEval`. The async exchange/refresh/device polling behavior remains unchanged.
+- Added a standalone `oauth` eval subsystem: new Rust/Zig binaries `eval-oauth`, build wiring, driver registration, and seven OAuth scenario dirs under `evals/fixtures/oauth/`. The OAuth error parser cases are folded into `scenario-parse-responses` so this adds exactly seven fixture directories.
+- Pinned Rust quirks preserved:
+  - `build_authorize_url` emits BTreeMap-equivalent alphabetical query key order.
+  - Token/form bodies emit declaration order, not sorted order.
+  - `parse_query_params` sorts final keys and duplicate decoded keys keep the final value.
+  - `parse_code_from_redirect` gives `error=` precedence, then state mismatch/missing-state checks, then code/raw-code handling.
+  - URL decode maps `+` to space and leaves invalid percent sequences to be consumed byte-by-byte.
+  - JWT extraction reads segment 1 only, does not validate signatures, tries account keys in Rust order, and only rejects account IDs that are empty after trim.
+- Phase 2/3 deferrals remain unchanged: no `receive_loopback_code`, no async HTTP token exchange/refresh/device polling port, no `AuthProfile` / profile store / `AuthService`, no `TokenSet::is_expiring_within`, no zeroclaw-config stubs, no chacha20poly1305 port, and no provider vtable extension.
+- Verification:
+  - `cd zig && zig build` — clean.
+  - `cd zig && zig build test --summary all` — `49/49 tests passed` (baseline 39 + 10 auth tests).
+  - `cargo build --manifest-path eval-tools/Cargo.toml --release` — release build finished.
+  - `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` — `783 passed, 0 failed, 1 doctest ignored`.
+  - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all fixtures OK. After adding the seven OAuth scenarios on top of the 115-fixture Phase 3-A baseline, the verified total is 122 fixtures.
+- No Zig stdlib gaps found. URL encoding was not delegated to a stdlib URI helper because Rust uses a small byte loop with form-style decode quirks; the OAuth round-trip eval covers spaces, `+`, invalid percent, Unicode, sorted query maps, SHA256/base64url, JWT extraction, and response parsing.
+- Open questions for Claude review:
+  - Confirm the `parse_token_response` eval contract should keep `expires_in_seconds` verbatim, including `0`, rather than mirroring production's `expires_at = None` for non-positive values.
+  - Confirm folding `parse_oauth_error` into `scenario-parse-responses` is the right way to preserve the requested seven-fixture target while still covering the named op.
+  - Confirm `parseCodeFromRedirect` returning an error tag in the public Zig helper, with `parseCodeFromRedirectResult` carrying the dynamic eval error string, is an acceptable Zig substitute for Rust's `anyhow` string errors.
+- Claude review notes (post-first-pass):
+  - All three open questions answered yes — the eval-only `expires_in_seconds` pass-through, folding `parse_oauth_error` into `scenario-parse-responses`, and the dual `parseCodeFromRedirect`/`parseCodeFromRedirectResult` API are all acceptable Phase 1 shapes.
+  - Section dated 2026-05-08 to reflect commit-day chronology after the parallel Phase 3-A landed at `4cfa3f2`. Codex initially appended at the 2B-2 anchor before Phase 3-A merged; Claude reordered during review.

@@ -13,7 +13,7 @@ Usage:
   python3 evals/driver/run_evals.py \\
       --rust eval-tools/target/release \\
       --zig zig/zig-out/bin \\
-      [--subsystem parser|memory|dispatcher|providers] \\
+      [--subsystem parser|memory|dispatcher|providers|oauth] \\
       [--update-golden]   # only with --rust; rewrites *.expected.json from Rust output
 """
 
@@ -59,6 +59,13 @@ SUBSYSTEMS = {
         "expected_name": "expected.jsonl",
         "rust_bin": "eval-providers",
         "zig_bin": "eval-providers",
+        "jsonl": True,
+    },
+    "oauth": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-oauth",
+        "zig_bin": "eval-oauth",
         "jsonl": True,
     },
 }

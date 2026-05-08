@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::Utc;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -62,10 +62,25 @@ struct DeviceCodeResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct OAuthErrorResponse {
-    error: String,
+pub struct OAuthErrorResponse {
+    pub error: String,
     #[serde(default)]
-    error_description: Option<String>,
+    pub error_description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenResponseForEval {
+    pub access_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_in_seconds: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 pub fn build_authorize_url(pkce: &PkceState) -> String {
@@ -86,6 +101,46 @@ pub fn build_authorize_url(pkce: &PkceState) -> String {
     }
 
     format!("{OPENAI_OAUTH_AUTHORIZE_URL}?{}", encoded.join("&"))
+}
+
+fn build_form_body(form: &[(&str, &str)]) -> String {
+    form.iter()
+        .map(|(key, value)| format!("{}={}", url_encode(key), url_encode(value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+pub fn build_token_request_body_authorization_code(code: &str, pkce: &PkceState) -> String {
+    build_form_body(&[
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("client_id", OPENAI_OAUTH_CLIENT_ID),
+        ("redirect_uri", OPENAI_OAUTH_REDIRECT_URI),
+        ("code_verifier", pkce.code_verifier.as_str()),
+    ])
+}
+
+pub fn build_token_request_body_refresh_token(refresh_token: &str) -> String {
+    build_form_body(&[
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", OPENAI_OAUTH_CLIENT_ID),
+    ])
+}
+
+pub fn build_device_code_request_body() -> String {
+    build_form_body(&[
+        ("client_id", OPENAI_OAUTH_CLIENT_ID),
+        ("scope", "openid profile email offline_access"),
+    ])
+}
+
+pub fn build_device_code_poll_body(device_code: &str) -> String {
+    build_form_body(&[
+        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+        ("device_code", device_code),
+        ("client_id", OPENAI_OAUTH_CLIENT_ID),
+    ])
 }
 
 pub async fn exchange_code_for_tokens(
@@ -348,6 +403,44 @@ pub fn extract_expiry_from_jwt(token: &str) -> Option<chrono::DateTime<Utc>> {
     chrono::DateTime::<Utc>::from_timestamp(exp, 0)
 }
 
+pub fn parse_token_response_body(body: &str) -> Result<TokenSet> {
+    let token: TokenResponse =
+        serde_json::from_str(body).context("Failed to parse OpenAI token response")?;
+    Ok(token_response_to_token_set(token))
+}
+
+pub fn parse_token_response_body_for_eval(body: &str) -> Result<TokenResponseForEval> {
+    let token: TokenResponse =
+        serde_json::from_str(body).context("Failed to parse OpenAI token response")?;
+    Ok(TokenResponseForEval {
+        access_token: token.access_token,
+        refresh_token: token.refresh_token,
+        id_token: token.id_token,
+        expires_in_seconds: token.expires_in,
+        token_type: token.token_type,
+        scope: token.scope,
+    })
+}
+
+pub fn parse_device_code_response_body(body: &str) -> Result<DeviceCodeStart> {
+    let parsed: DeviceCodeResponse =
+        serde_json::from_str(body).context("Failed to parse OpenAI device-code response")?;
+
+    Ok(DeviceCodeStart {
+        device_code: parsed.device_code,
+        user_code: parsed.user_code,
+        verification_uri: parsed.verification_uri,
+        verification_uri_complete: parsed.verification_uri_complete,
+        expires_in: parsed.expires_in,
+        interval: parsed.interval.unwrap_or(5).max(1),
+        message: parsed.message,
+    })
+}
+
+pub fn parse_oauth_error_body(body: &str) -> Result<OAuthErrorResponse> {
+    serde_json::from_str(body).context("Failed to parse OpenAI OAuth error response")
+}
+
 async fn parse_token_response(response: reqwest::Response) -> Result<TokenSet> {
     if !response.status().is_success() {
         let status = response.status();
@@ -360,6 +453,10 @@ async fn parse_token_response(response: reqwest::Response) -> Result<TokenSet> {
         .await
         .context("Failed to parse OpenAI token response")?;
 
+    Ok(token_response_to_token_set(token))
+}
+
+fn token_response_to_token_set(token: TokenResponse) -> TokenSet {
     let expires_at = token.expires_in.and_then(|seconds| {
         if seconds <= 0 {
             None
@@ -368,14 +465,14 @@ async fn parse_token_response(response: reqwest::Response) -> Result<TokenSet> {
         }
     });
 
-    Ok(TokenSet {
+    TokenSet {
         access_token: token.access_token,
         refresh_token: token.refresh_token,
         id_token: token.id_token,
         expires_at,
         token_type: token.token_type,
         scope: token.scope,
-    })
+    }
 }
 
 #[cfg(test)]

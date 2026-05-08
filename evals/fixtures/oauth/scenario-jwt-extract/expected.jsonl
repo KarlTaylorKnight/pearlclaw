@@ -1,0 +1,6 @@
+{"op":"extract_account_id_from_jwt","result":"acct_123"}
+{"op":"extract_account_id_from_jwt","result":"sub_456"}
+{"op":"extract_expiry_from_jwt","result":1710000000}
+{"op":"extract_expiry_from_jwt","result":1700000000}
+{"op":"extract_account_id_from_jwt","result":null}
+{"op":"extract_expiry_from_jwt","result":null}

@@ -1,0 +1,4 @@
+{"op":"build_token_body_authorization_code","result":"grant_type=authorization_code&code=code%3Dwith%20spaces&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&code_verifier=verifier%2Bvalue"}
+{"op":"build_token_body_refresh_token","result":"grant_type=refresh_token&refresh_token=refresh%2Ftoken%2Bvalue&client_id=app_EMoamEEZ73f0CkXaXp7hrann"}
+{"op":"build_device_code_body","result":"client_id=app_EMoamEEZ73f0CkXaXp7hrann&scope=openid%20profile%20email%20offline_access"}
+{"op":"build_device_code_poll_body","result":"grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code=device%2Fcode%2Bvalue&client_id=app_EMoamEEZ73f0CkXaXp7hrann"}

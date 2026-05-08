@@ -1,0 +1,7 @@
+{"op":"parse_code_from_redirect","result":{"code":"abc123"}}
+{"op":"parse_code_from_redirect","result":{"code":"raw-code"}}
+{"op":"parse_code_from_redirect","result":{"error":"OAuth state mismatch"}}
+{"op":"parse_code_from_redirect","result":{"error":"OpenAI OAuth error: access_denied (user cancelled)"}}
+{"op":"parse_code_from_redirect","result":{"error":"Missing OAuth code in callback"}}
+{"op":"parse_code_from_redirect","result":{"code":"solo"}}
+{"op":"parse_code_from_redirect","result":{"error":"OpenAI OAuth error: access_denied (OAuth authorization failed)"}}
