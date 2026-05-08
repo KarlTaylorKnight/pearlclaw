@@ -13,8 +13,9 @@ use zeroclaw_providers::auth::oauth_common::{
 use zeroclaw_providers::auth::openai_oauth::{
     build_authorize_url, build_device_code_poll_body, build_device_code_request_body,
     build_token_request_body_authorization_code, build_token_request_body_refresh_token,
-    extract_account_id_from_jwt, extract_expiry_from_jwt, parse_code_from_redirect,
-    parse_device_code_response_body, parse_oauth_error_body, parse_token_response_body_for_eval,
+    classify_device_code_error, extract_account_id_from_jwt, extract_expiry_from_jwt,
+    parse_code_from_redirect, parse_device_code_response_body, parse_loopback_request_path,
+    parse_oauth_error_body, parse_token_response_body_for_eval, DeviceCodeErrorKind,
 };
 
 fn main() -> Result<()> {
@@ -117,6 +118,14 @@ fn main() -> Result<()> {
                 };
                 write_result(&mut output, op, result);
             }
+            "parse_loopback_request_path" => {
+                let input = required_string(&op_value, "input")?;
+                let result = match parse_loopback_request_path(input) {
+                    Ok(path) => serde_json::json!({ "path": path }),
+                    Err(_) => serde_json::json!({ "error": "InvalidLoopbackRequest" }),
+                };
+                write_result(&mut output, op, result);
+            }
             "parse_token_response" => {
                 let body = required_string(&op_value, "body")?;
                 let parsed = parse_token_response_body_for_eval(body)?;
@@ -160,6 +169,19 @@ fn main() -> Result<()> {
                     result.insert("error_description".to_string(), serde_json::json!(value));
                 }
                 write_result(&mut output, op, Value::Object(result));
+            }
+            "classify_device_code_error" => {
+                let body = required_string(&op_value, "body")?;
+                let parsed = parse_oauth_error_body(body).ok();
+                let description = parsed.and_then(|err| err.error_description);
+                write_result(
+                    &mut output,
+                    op,
+                    serde_json::json!({
+                        "kind": device_code_error_kind_name(classify_device_code_error(body)),
+                        "description": description,
+                    }),
+                );
             }
             "extract_account_id_from_jwt" => {
                 let token = required_string(&op_value, "token")?;
@@ -221,6 +243,17 @@ fn decode_hex(input: &str) -> Result<Vec<u8>> {
         i += 2;
     }
     Ok(out)
+}
+
+fn device_code_error_kind_name(kind: DeviceCodeErrorKind) -> &'static str {
+    match kind {
+        DeviceCodeErrorKind::Pending => "Pending",
+        DeviceCodeErrorKind::SlowDown => "SlowDown",
+        DeviceCodeErrorKind::Denied => "Denied",
+        DeviceCodeErrorKind::Expired => "Expired",
+        DeviceCodeErrorKind::Other => "Other",
+        DeviceCodeErrorKind::Unparseable => "Unparseable",
+    }
 }
 
 fn write_result(output: &mut Vec<u8>, op: &str, result: Value) {

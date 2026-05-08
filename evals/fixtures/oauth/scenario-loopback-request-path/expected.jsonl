@@ -1,0 +1,5 @@
+{"op":"parse_loopback_request_path","result":{"path":"/auth/callback?code=x&state=y"}}
+{"op":"parse_loopback_request_path","result":{"path":"/auth/callback"}}
+{"op":"parse_loopback_request_path","result":{"error":"InvalidLoopbackRequest"}}
+{"op":"parse_loopback_request_path","result":{"error":"InvalidLoopbackRequest"}}
+{"op":"parse_loopback_request_path","result":{"path":"/auth/callback?code=lower&state=s"}}

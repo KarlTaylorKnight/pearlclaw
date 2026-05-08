@@ -1,0 +1,6 @@
+{"op":"classify_device_code_error","body":"{\"error\":\"authorization_pending\",\"error_description\":\"still waiting\"}"}
+{"op":"classify_device_code_error","body":"{\"error\":\"slow_down\",\"error_description\":\"poll less often\"}"}
+{"op":"classify_device_code_error","body":"{\"error\":\"access_denied\",\"error_description\":\"user denied\"}"}
+{"op":"classify_device_code_error","body":"{\"error\":\"expired_token\"}"}
+{"op":"classify_device_code_error","body":"{\"error\":\"temporarily_unavailable\",\"error_description\":\"try again\"}"}
+{"op":"classify_device_code_error","body":"not-json"}

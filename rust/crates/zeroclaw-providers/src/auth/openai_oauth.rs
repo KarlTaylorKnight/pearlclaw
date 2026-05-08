@@ -68,6 +68,16 @@ pub struct OAuthErrorResponse {
     pub error_description: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceCodeErrorKind {
+    Pending,
+    SlowDown,
+    Denied,
+    Expired,
+    Other,
+    Unparseable,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenResponseForEval {
     pub access_token: String,
@@ -253,21 +263,17 @@ pub async fn poll_device_code_tokens(
         let text = response.text().await.unwrap_or_default();
 
         if let Ok(err) = serde_json::from_str::<OAuthErrorResponse>(&text) {
-            match err.error.as_str() {
-                "authorization_pending" => {
-                    continue;
-                }
-                "slow_down" => {
+            match device_code_error_kind_from_str(&err.error) {
+                DeviceCodeErrorKind::Pending => continue,
+                DeviceCodeErrorKind::SlowDown => {
                     interval_secs = interval_secs.saturating_add(5);
                     continue;
                 }
-                "access_denied" => {
+                DeviceCodeErrorKind::Denied => {
                     anyhow::bail!("OpenAI device-code authorization was denied")
                 }
-                "expired_token" => {
-                    anyhow::bail!("OpenAI device-code expired")
-                }
-                _ => {
+                DeviceCodeErrorKind::Expired => anyhow::bail!("OpenAI device-code expired"),
+                DeviceCodeErrorKind::Other | DeviceCodeErrorKind::Unparseable => {
                     anyhow::bail!(
                         "OpenAI device-code polling failed ({status}): {}",
                         err.error_description.unwrap_or(err.error)
@@ -298,15 +304,7 @@ pub async fn receive_loopback_code(expected_state: &str, timeout: Duration) -> R
         .context("Failed to read callback request")?;
 
     let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-    let first_line = request
-        .lines()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Malformed callback request"))?;
-
-    let path = first_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("Callback request missing path"))?;
+    let path = parse_loopback_request_path(&request)?;
 
     let code = parse_code_from_redirect(path, Some(expected_state))?;
 
@@ -320,6 +318,35 @@ pub async fn receive_loopback_code(expected_state: &str, timeout: Duration) -> R
     let _ = stream.write_all(response.as_bytes()).await;
 
     Ok(code)
+}
+
+pub fn parse_loopback_request_path(input: &str) -> Result<&str> {
+    let first_line = input
+        .lines()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Malformed callback request"))?;
+
+    first_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("Callback request missing path"))
+}
+
+pub fn classify_device_code_error(body: &str) -> DeviceCodeErrorKind {
+    match serde_json::from_str::<OAuthErrorResponse>(body) {
+        Ok(err) => device_code_error_kind_from_str(&err.error),
+        Err(_) => DeviceCodeErrorKind::Unparseable,
+    }
+}
+
+fn device_code_error_kind_from_str(error: &str) -> DeviceCodeErrorKind {
+    match error {
+        "authorization_pending" => DeviceCodeErrorKind::Pending,
+        "slow_down" => DeviceCodeErrorKind::SlowDown,
+        "access_denied" => DeviceCodeErrorKind::Denied,
+        "expired_token" => DeviceCodeErrorKind::Expired,
+        _ => DeviceCodeErrorKind::Other,
+    }
 }
 
 pub fn parse_code_from_redirect(input: &str, expected_state: Option<&str>) -> Result<String> {

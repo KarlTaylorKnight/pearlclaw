@@ -796,3 +796,30 @@ Lifts the raw-JSON tool boundary that Phase 2A's eval contract carried as a TODO
 - Claude review notes (post-first-pass):
   - All three open questions answered yes — the eval-only `expires_in_seconds` pass-through, folding `parse_oauth_error` into `scenario-parse-responses`, and the dual `parseCodeFromRedirect`/`parseCodeFromRedirectResult` API are all acceptable Phase 1 shapes.
   - Section dated 2026-05-08 to reflect commit-day chronology after the parallel Phase 3-A landed at `4cfa3f2`. Codex initially appended at the 2B-2 anchor before Phase 3-A merged; Claude reordered during review.
+
+---
+
+## 2026-05-08 — OpenAI OAuth Phase 2 first-pass (Codex)
+
+- Ported the async/HTTP-bound OAuth surface that Phase 1 deferred, without crossing into profiles/AuthService/config: `receiveLoopbackCode`, `exchangeCodeForTokens`, `refreshAccessToken`, `startDeviceCodeFlow`, `pollDeviceCodeTokens`, `parseLoopbackRequestPath`, and `classifyDeviceCodeError`.
+- Added `zig/src/providers/auth/loopback.zig` for the loopback listener and request-line parsing. The listener binds `127.0.0.1:1455`, accepts one connection, reads up to 8 KiB, extracts the second request-line token, and writes the Rust-verbatim success HTML with byte-accurate `Content-Length`. To preserve Rust's "parse before success response" order, `loopback.zig` returns a `LoopbackRequest`; `openai_oauth.receiveLoopbackCode` calls Phase 1 `parseCodeFromRedirect` before writing the 200 response.
+- Added synchronous token endpoint POST helpers on top of `std.http.Client.fetch` using `application/x-www-form-urlencoded` bodies from the Phase 1 builders. 2xx token/device responses are parsed by the existing Phase 1 parsers; non-2xx token/device-start responses return narrow Zig error tags.
+- Added device-code polling with injectable `now_unix_seconds_fn` and a private test seam: `pollDeviceCodeTokensWithHooks(allocator, device_start, now_fn, post_fn, sleep_fn)`. Production passes `postFormBody` + `sleepSeconds`; the unit test passes fake `HttpPostFn` and no-real-sleep `SleepSecondsFn` to exercise `slow_down` + `authorization_pending` + eventual 2xx success deterministically.
+- Rust-side surfacing stayed visibility/helper-only in `rust/crates/zeroclaw-providers/src/auth/openai_oauth.rs`: extracted `parse_loopback_request_path`, added public `DeviceCodeErrorKind`, added `classify_device_code_error`, and routed the existing async loopback/polling code through the extracted helpers without changing async behavior.
+- Eval harness additions stayed in the existing `oauth` subsystem: `parse_loopback_request_path` and `classify_device_code_error`. Added two OAuth scenario dirs (`scenario-loopback-request-path`, `scenario-classify-device-code-error`) covering request-line parsing errors/lowercase methods and all six device-code error classifications.
+- Pinned Rust quirks preserved:
+  - Loopback request path is `request.lines().next()` then second whitespace token. Zig uses ASCII space/tab tokenization rather than Rust Unicode `split_whitespace`; this is an accepted Phase 2 simplification and is now fixture-pinned for ordinary HTTP whitespace.
+  - Success body is exactly `<html><body><h2>ZeroClaw login complete</h2><p>You can close this tab.</p></body></html>`; `Content-Length` uses `SUCCESS_BODY.len`.
+  - Device polling checks 2xx success before attempting OAuth error classification.
+  - `slow_down` uses `std.math.add(u64, interval_secs, 5) catch interval_secs`, matching the requested saturating-shape simplification.
+  - Timeout implementation uses nonblocking `accept()` polling for the listener and `SO_RCVTIMEO` / `SO_SNDTIMEO` on the accepted stream. This avoids relying on std.net accepting timeout semantics while still bounding read/write after accept.
+  - Polling timeout uses `now_fn() - start_unix_seconds > expires_in` before each loop body; production passes `std.time.timestamp`.
+- Phase 3 deferrals remain unchanged: no `AuthProfile`, `AuthProfilesData`, `AuthProfilesStore`, `AuthService`, `SecretStore`, `zeroclaw-config`, `refresh_openai_access_token_with_retries`, Gemini refresh helpers, or `TokenSet::is_expiring_within`.
+- Verification:
+  - `cd zig && zig build` — clean.
+  - `cd zig && zig build test --summary all` — `53/53 tests passed` (baseline 49 + loopback parser tests + classifier test + fake-HTTP polling test).
+  - `cargo build --manifest-path eval-tools/Cargo.toml --release` — release build finished.
+  - `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` — `783 passed, 0 failed, 1 doctest ignored`.
+  - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all fixtures OK. The OAuth delta is 7 + 2 = 9 OAuth fixture dirs. This working tree also contains two provider `scenario-list-models` fixture dirs, so the observed full-suite total is 126 fixture inputs rather than the Phase 1 note's 122 + 2 target.
+- Zig 0.14.1 stdlib gaps/choices: no `std.http.Client.fetch` body-framing gap surfaced for form POSTs; `fetch` sets `content_length` from payload length. Loopback response framing is manual to match Rust's short fixed response. Accept timeout is manual nonblocking polling because std.net has no direct `accept(timeout)` helper.
+- Live HTTP remains compile-checked but not eval-tested: `exchangeCodeForTokens`, `refreshAccessToken`, `startDeviceCodeFlow`, `pollDeviceCodeTokens`, and `receiveLoopbackCode` require OpenAI endpoints or local browser/socket integration. Phase 2 eval intentionally covers only the two offline helpers plus Zig unit tests for polling dispatch.

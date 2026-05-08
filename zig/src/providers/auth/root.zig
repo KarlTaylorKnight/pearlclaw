@@ -1,5 +1,6 @@
 pub const types = @import("types.zig");
 pub const oauth_common = @import("oauth_common.zig");
+pub const loopback = @import("loopback.zig");
 pub const openai_oauth = @import("openai_oauth.zig");
 
 pub const PkceState = oauth_common.PkceState;
@@ -9,6 +10,8 @@ pub const TokenSet = types.TokenSet;
 pub const TokenResponseForEval = types.TokenResponseForEval;
 pub const DeviceCodeStart = types.DeviceCodeStart;
 pub const OAuthErrorResponse = types.OAuthErrorResponse;
+pub const DeviceCodeErrorKind = openai_oauth.DeviceCodeErrorKind;
+pub const DeviceCodeErrorClassification = openai_oauth.DeviceCodeErrorClassification;
 
 pub const generatePkceState = oauth_common.generatePkceState;
 pub const pkceStateFromSeed = oauth_common.pkceStateFromSeed;
@@ -18,6 +21,13 @@ pub const decodeBase64UrlNoPad = oauth_common.decodeBase64UrlNoPad;
 pub const urlEncode = oauth_common.urlEncode;
 pub const urlDecode = oauth_common.urlDecode;
 pub const parseQueryParams = oauth_common.parseQueryParams;
+pub const parseLoopbackRequestPath = loopback.parseLoopbackRequestPath;
+pub const exchangeCodeForTokens = openai_oauth.exchangeCodeForTokens;
+pub const refreshAccessToken = openai_oauth.refreshAccessToken;
+pub const startDeviceCodeFlow = openai_oauth.startDeviceCodeFlow;
+pub const pollDeviceCodeTokens = openai_oauth.pollDeviceCodeTokens;
+pub const receiveLoopbackCode = openai_oauth.receiveLoopbackCode;
+pub const classifyDeviceCodeError = openai_oauth.classifyDeviceCodeError;
 
 test {
     @import("std").testing.refAllDecls(@This());

@@ -1,0 +1,5 @@
+{"op":"parse_loopback_request_path","input":"GET /auth/callback?code=x&state=y HTTP/1.1\r\nHost: 127.0.0.1:1455\r\n\r\n"}
+{"op":"parse_loopback_request_path","input":"GET /auth/callback HTTP/1.1\r\nHost: 127.0.0.1:1455\r\n\r\n"}
+{"op":"parse_loopback_request_path","input":""}
+{"op":"parse_loopback_request_path","input":"\n"}
+{"op":"parse_loopback_request_path","input":"get /auth/callback?code=lower&state=s HTTP/1.1\r\nHost: 127.0.0.1:1455\r\n\r\n"}

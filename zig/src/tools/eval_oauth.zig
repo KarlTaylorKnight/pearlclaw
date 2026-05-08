@@ -112,6 +112,16 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
             },
         }
         try writer.writeAll("}}\n");
+    } else if (std.mem.eql(u8, op, "parse_loopback_request_path")) {
+        const input = getString(parsed.value, "input") orelse return EvalError.InvalidScenario;
+        try writer.writeAll("{\"op\":\"parse_loopback_request_path\",\"result\":{");
+        const path = oauth.parseLoopbackRequestPath(input) catch {
+            try writer.writeAll("\"error\":\"InvalidLoopbackRequest\"}}\n");
+            return;
+        };
+        try writer.writeAll("\"path\":");
+        try std.json.stringify(path, .{}, writer);
+        try writer.writeAll("}}\n");
     } else if (std.mem.eql(u8, op, "parse_token_response")) {
         const body = getString(parsed.value, "body") orelse return EvalError.InvalidScenario;
         var result = try oauth.parseTokenResponseBodyForEval(allocator, body);
@@ -132,6 +142,13 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
         defer result.deinit(allocator);
         try writer.writeAll("{\"op\":\"parse_oauth_error\",\"result\":");
         try writeOAuthError(writer, result);
+        try writer.writeAll("}\n");
+    } else if (std.mem.eql(u8, op, "classify_device_code_error")) {
+        const body = getString(parsed.value, "body") orelse return EvalError.InvalidScenario;
+        var result = try oauth.classifyDeviceCodeError(allocator, body);
+        defer result.deinit(allocator);
+        try writer.writeAll("{\"op\":\"classify_device_code_error\",\"result\":");
+        try writeDeviceCodeErrorClassification(writer, result);
         try writer.writeAll("}\n");
     } else if (std.mem.eql(u8, op, "extract_account_id_from_jwt")) {
         const token = getString(parsed.value, "token") orelse return EvalError.InvalidScenario;
@@ -249,6 +266,29 @@ fn writeOAuthError(writer: anytype, oauth_error: auth.OAuthErrorResponse) !void 
     try writeRequiredStringField(writer, &wrote, "error", oauth_error.err);
     try writeOptionalStringField(writer, &wrote, "error_description", oauth_error.error_description);
     try writer.writeByte('}');
+}
+
+fn writeDeviceCodeErrorClassification(writer: anytype, classification: oauth.DeviceCodeErrorClassification) !void {
+    try writer.writeAll("{\"description\":");
+    if (classification.description) |description| {
+        try std.json.stringify(description, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"kind\":");
+    try std.json.stringify(deviceCodeErrorKindString(classification.kind), .{}, writer);
+    try writer.writeByte('}');
+}
+
+fn deviceCodeErrorKindString(kind: oauth.DeviceCodeErrorKind) []const u8 {
+    return switch (kind) {
+        .Pending => "Pending",
+        .SlowDown => "SlowDown",
+        .Denied => "Denied",
+        .Expired => "Expired",
+        .Other => "Other",
+        .Unparseable => "Unparseable",
+    };
 }
 
 fn writeRequiredStringField(writer: anytype, wrote: *bool, key: []const u8, value: []const u8) !void {

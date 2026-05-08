@@ -1,0 +1,6 @@
+{"op":"classify_device_code_error","result":{"description":"still waiting","kind":"Pending"}}
+{"op":"classify_device_code_error","result":{"description":"poll less often","kind":"SlowDown"}}
+{"op":"classify_device_code_error","result":{"description":"user denied","kind":"Denied"}}
+{"op":"classify_device_code_error","result":{"description":null,"kind":"Expired"}}
+{"op":"classify_device_code_error","result":{"description":"try again","kind":"Other"}}
+{"op":"classify_device_code_error","result":{"description":null,"kind":"Unparseable"}}
