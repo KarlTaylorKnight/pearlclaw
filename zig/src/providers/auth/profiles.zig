@@ -221,13 +221,15 @@ pub const AuthProfilesStore = struct {
         defer data.deinit(self.allocator);
 
         var stored = try profile.clone(self.allocator);
-        errdefer stored.deinit(self.allocator);
+        var transferred = false;
+        errdefer if (!transferred) stored.deinit(self.allocator);
         stored.updated_at_unix_seconds = now_unix_seconds;
         if (data.profiles.get(profile.id)) |existing| {
             stored.created_at_unix_seconds = existing.created_at_unix_seconds;
         }
         if (set_active) try putStringValue(self.allocator, &data.active_profiles, stored.provider, stored.id);
         try putProfileValue(self.allocator, &data.profiles, stored.id, stored);
+        transferred = true;
         data.updated_at_unix_seconds = now_unix_seconds;
         try self.saveLocked(&data);
     }
@@ -342,33 +344,24 @@ pub const AuthProfilesStore = struct {
             token.migrated = null;
 
             const kind = try AuthProfileKind.fromString(p.kind);
-            var profile = AuthProfile{
-                .id = try self.allocator.dupe(u8, id),
-                .provider = try self.allocator.dupe(u8, p.provider),
-                .profile_name = try self.allocator.dupe(u8, p.profile_name),
-                .kind = kind,
-                .account_id = try cloneOptional(self.allocator, p.account_id),
-                .workspace_id = try cloneOptional(self.allocator, p.workspace_id),
-                .metadata = try cloneStringMap(self.allocator, p.metadata),
-                .created_at_unix_seconds = datetime.parseRfc3339WithFallback(p.created_at, now),
-                .updated_at_unix_seconds = datetime.parseRfc3339WithFallback(p.updated_at, now),
-            };
+            var profile = try buildLoadedProfileShell(self.allocator, id, p, kind, now);
             errdefer profile.deinit(self.allocator);
 
             switch (kind) {
                 .OAuth => {
                     const access_token = access.plaintext orelse return error.BadProfile;
                     access.plaintext = null;
-                    profile.token_set = .{
-                        .access_token = access_token,
-                        .refresh_token = refresh.plaintext,
-                        .id_token = id_token.plaintext,
-                        .expires_at_utc_seconds = try datetime.parseOptionalRfc3339(p.expires_at),
-                        .token_type = try cloneOptional(self.allocator, p.token_type),
-                        .scope = try cloneOptional(self.allocator, p.scope),
-                    };
+                    const refresh_pt = refresh.plaintext;
                     refresh.plaintext = null;
+                    const id_token_pt = id_token.plaintext;
                     id_token.plaintext = null;
+                    profile.token_set = try buildOauthTokenSet(
+                        self.allocator,
+                        p,
+                        access_token,
+                        refresh_pt,
+                        id_token_pt,
+                    );
                 },
                 .Token => {
                     profile.token = token.plaintext;
@@ -450,11 +443,12 @@ pub const AuthProfilesStore = struct {
         );
         defer self.allocator.free(tmp_path);
 
-        var file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
         errdefer std.fs.cwd().deleteFile(tmp_path) catch {};
-        errdefer file.close();
-        try file.writeAll(json.items);
-        file.close();
+        {
+            var file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+            defer file.close();
+            try file.writeAll(json.items);
+        }
         try std.fs.cwd().rename(tmp_path, self.path_value);
     }
 
@@ -597,8 +591,9 @@ fn parsePersistedAuthProfiles(allocator: std.mem.Allocator, value: std.json.Valu
     errdefer out.deinit(allocator);
     if (value.object.get("schema_version")) |schema| out.schema_version = @intCast(try jsonI64(schema));
     if (value.object.get("updated_at")) |updated_at| {
+        const new_updated_at = try jsonStringDup(allocator, updated_at);
         allocator.free(out.updated_at);
-        out.updated_at = try jsonStringDup(allocator, updated_at);
+        out.updated_at = new_updated_at;
     }
     if (value.object.get("active_profiles")) |active| {
         if (active != .object) return error.InvalidJson;
@@ -758,33 +753,46 @@ fn lessThanBytes(_: void, a: []const u8, b: []const u8) bool {
 }
 
 fn putStringValue(allocator: std.mem.Allocator, map: *std.StringHashMap([]u8), key: []const u8, value: []const u8) !void {
+    try map.ensureUnusedCapacity(1);
     const value_owned = try allocator.dupe(u8, value);
     errdefer allocator.free(value_owned);
-    const gop = try map.getOrPut(key);
+    const gop = map.getOrPutAssumeCapacity(key);
     if (gop.found_existing) {
         allocator.free(gop.value_ptr.*);
     } else {
-        gop.key_ptr.* = try allocator.dupe(u8, key);
+        gop.key_ptr.* = allocator.dupe(u8, key) catch |err| {
+            // Roll back the empty slot so deinit doesn't free uninitialized key/value pointers.
+            map.removeByPtr(gop.key_ptr);
+            return err;
+        };
     }
     gop.value_ptr.* = value_owned;
 }
 
 fn putProfileValue(allocator: std.mem.Allocator, map: *std.StringHashMap(AuthProfile), key: []const u8, value: AuthProfile) !void {
-    const gop = try map.getOrPut(key);
+    try map.ensureUnusedCapacity(1);
+    const gop = map.getOrPutAssumeCapacity(key);
     if (gop.found_existing) {
         gop.value_ptr.deinit(allocator);
     } else {
-        gop.key_ptr.* = try allocator.dupe(u8, key);
+        gop.key_ptr.* = allocator.dupe(u8, key) catch |err| {
+            map.removeByPtr(gop.key_ptr);
+            return err;
+        };
     }
     gop.value_ptr.* = value;
 }
 
 fn putPersistedProfile(allocator: std.mem.Allocator, map: *std.StringHashMap(PersistedAuthProfile), key: []const u8, value: PersistedAuthProfile) !void {
-    const gop = try map.getOrPut(key);
+    try map.ensureUnusedCapacity(1);
+    const gop = map.getOrPutAssumeCapacity(key);
     if (gop.found_existing) {
         gop.value_ptr.deinit(allocator);
     } else {
-        gop.key_ptr.* = try allocator.dupe(u8, key);
+        gop.key_ptr.* = allocator.dupe(u8, key) catch |err| {
+            map.removeByPtr(gop.key_ptr);
+            return err;
+        };
     }
     gop.value_ptr.* = value;
 }
@@ -838,6 +846,67 @@ fn freeOptional(allocator: std.mem.Allocator, value: DecryptedOptional) void {
 fn replaceOptional(allocator: std.mem.Allocator, slot: *?[]u8, value: []u8) !void {
     if (slot.*) |old| allocator.free(old);
     slot.* = value;
+}
+
+fn buildLoadedProfileShell(
+    allocator: std.mem.Allocator,
+    id: []const u8,
+    p: *const PersistedAuthProfile,
+    kind: AuthProfileKind,
+    now_unix_seconds: i64,
+) !AuthProfile {
+    const id_owned = try allocator.dupe(u8, id);
+    errdefer allocator.free(id_owned);
+    const provider_owned = try allocator.dupe(u8, p.provider);
+    errdefer allocator.free(provider_owned);
+    const profile_name_owned = try allocator.dupe(u8, p.profile_name);
+    errdefer allocator.free(profile_name_owned);
+    const account_id = try cloneOptional(allocator, p.account_id);
+    errdefer if (account_id) |value| allocator.free(value);
+    const workspace_id = try cloneOptional(allocator, p.workspace_id);
+    errdefer if (workspace_id) |value| allocator.free(value);
+    var metadata = try cloneStringMap(allocator, p.metadata);
+    errdefer deinitStringMap(allocator, &metadata);
+
+    return .{
+        .id = id_owned,
+        .provider = provider_owned,
+        .profile_name = profile_name_owned,
+        .kind = kind,
+        .account_id = account_id,
+        .workspace_id = workspace_id,
+        .metadata = metadata,
+        .created_at_unix_seconds = datetime.parseRfc3339WithFallback(p.created_at, now_unix_seconds),
+        .updated_at_unix_seconds = datetime.parseRfc3339WithFallback(p.updated_at, now_unix_seconds),
+    };
+}
+
+fn buildOauthTokenSet(
+    allocator: std.mem.Allocator,
+    p: *const PersistedAuthProfile,
+    access_token_owned: []u8,
+    refresh_plaintext: ?[]u8,
+    id_token_plaintext: ?[]u8,
+) !TokenSet {
+    // On error: free the three "owned" inputs that were transferred to us.
+    // On success: returned TokenSet owns them; caller takes responsibility.
+    errdefer allocator.free(access_token_owned);
+    errdefer if (refresh_plaintext) |value| allocator.free(value);
+    errdefer if (id_token_plaintext) |value| allocator.free(value);
+
+    const expires_at = try datetime.parseOptionalRfc3339(p.expires_at);
+    const token_type = try cloneOptional(allocator, p.token_type);
+    errdefer if (token_type) |value| allocator.free(value);
+    const scope = try cloneOptional(allocator, p.scope);
+
+    return .{
+        .access_token = access_token_owned,
+        .refresh_token = refresh_plaintext,
+        .id_token = id_token_plaintext,
+        .expires_at_utc_seconds = expires_at,
+        .token_type = token_type,
+        .scope = scope,
+    };
 }
 
 fn jsonString(value: std.json.Value) ![]const u8 {
@@ -933,4 +1002,125 @@ test "AuthProfilesStore roundtrips encrypted OAuth profile" {
     defer std.testing.allocator.free(raw);
     try std.testing.expect(std.mem.indexOf(u8, raw, "enc2:") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "refresh-123") == null);
+}
+
+// Build a populated OAuth AuthProfile while staying leak-safe under
+// FailingAllocator sweeps. Uses a `transferred` flag so newOauth's consumption
+// of the TokenSet on success doesn't double-free with the errdefer above it.
+fn buildSampleOauthProfile(allocator: std.mem.Allocator) !AuthProfile {
+    var token_set = TokenSet{ .access_token = try allocator.dupe(u8, "access-123") };
+    var token_owned_by_profile = false;
+    errdefer if (!token_owned_by_profile) token_set.deinit(allocator);
+
+    token_set.refresh_token = try allocator.dupe(u8, "refresh-123");
+    token_set.token_type = try allocator.dupe(u8, "Bearer");
+    token_set.scope = try allocator.dupe(u8, "openid offline_access");
+    token_set.expires_at_utc_seconds = 1_800_000_000;
+
+    var profile = try AuthProfile.newOauth(
+        allocator,
+        "openai-codex",
+        "default",
+        token_set,
+        1_700_000_000,
+    );
+    token_owned_by_profile = true;
+    errdefer profile.deinit(allocator);
+
+    profile.account_id = try allocator.dupe(u8, "acct_123");
+    return profile;
+}
+
+fn upsertOomImpl(allocator: std.mem.Allocator) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const state_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(state_dir);
+
+    var store = try AuthProfilesStore.new(allocator, state_dir, true);
+    defer store.deinit();
+
+    var profile = try buildSampleOauthProfile(allocator);
+    defer profile.deinit(allocator);
+
+    try store.upsertProfile(&profile, true, 1_700_000_010);
+}
+
+test "AuthProfilesStore.upsertProfile is OOM-safe (regression for move-semantics fix)" {
+    // Sweeps fail_index across the full upsert path: clone, putStringValue,
+    // putProfileValue, saveLocked (which writes encrypted JSON to disk).
+    // The previous always-armed errdefer would double-free `stored` once
+    // putProfileValue had moved ownership into the profiles map and a later
+    // saveLocked failure unwound back through it.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, upsertOomImpl, .{});
+}
+
+fn loadOomImpl(allocator: std.mem.Allocator) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Stage a populated profiles.json with std.testing.allocator (outside the
+    // failing-allocator sweep) so that load() under the failing allocator
+    // exercises the full read+decrypt+rebuild path on every iteration.
+    {
+        const setup_alloc = std.testing.allocator;
+        const setup_state_dir = try tmp.dir.realpathAlloc(setup_alloc, ".");
+        defer setup_alloc.free(setup_state_dir);
+        var setup_store = try AuthProfilesStore.new(setup_alloc, setup_state_dir, true);
+        defer setup_store.deinit();
+        var setup_profile = try buildSampleOauthProfile(setup_alloc);
+        defer setup_profile.deinit(setup_alloc);
+        try setup_store.upsertProfile(&setup_profile, true, 1_700_000_010);
+    }
+
+    const state_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(state_dir);
+
+    var store = try AuthProfilesStore.new(allocator, state_dir, true);
+    defer store.deinit();
+
+    var data = try store.load();
+    defer data.deinit(allocator);
+}
+
+test "AuthProfilesStore.load is OOM-safe (regression for struct-literal leak fix)" {
+    // Sweeps fail_index across the load path: JSON parse, decrypt, build the
+    // AuthProfile shell, then build the TokenSet. The previous inline struct
+    // literal leaked partially-allocated owned strings if any later field's
+    // alloc failed mid-construction.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, loadOomImpl, .{});
+}
+
+test "AuthProfilesStore writePersistedLocked recovers from rename failure (regression for double-close fix)" {
+    // The fix changed an explicit file.close() followed by `errdefer file.close()`
+    // into a scoped `defer file.close()`. To trigger the rename-failure path
+    // we pre-create a non-empty directory at the auth-profiles.json path so
+    // rename(file, dir) fails on POSIX. Don't pin a specific error tag —
+    // rename-into-dir errors vary across macOS/Linux/Zig versions. The pass
+    // criterion is "any error returned, no double-close crash".
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const state_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(state_dir);
+
+    const profiles_path = try std.fs.path.join(std.testing.allocator, &.{ state_dir, PROFILES_FILENAME });
+    defer std.testing.allocator.free(profiles_path);
+    try std.fs.cwd().makePath(profiles_path);
+    const sentinel_path = try std.fs.path.join(std.testing.allocator, &.{ profiles_path, ".keep" });
+    defer std.testing.allocator.free(sentinel_path);
+    {
+        var sentinel = try std.fs.cwd().createFile(sentinel_path, .{ .truncate = true });
+        sentinel.close();
+    }
+
+    var store = try AuthProfilesStore.new(std.testing.allocator, state_dir, true);
+    defer store.deinit();
+
+    var profile = try buildSampleOauthProfile(std.testing.allocator);
+    defer profile.deinit(std.testing.allocator);
+
+    store.upsertProfile(&profile, true, 1_700_000_010) catch return;
+    return error.TestExpectedError;
 }

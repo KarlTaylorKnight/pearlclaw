@@ -43,16 +43,15 @@ pub const SecretStore = struct {
         std.crypto.random.bytes(&nonce);
 
         const ciphertext = try self.allocator.alloc(u8, plaintext.len);
-        errdefer self.allocator.free(ciphertext);
+        defer self.allocator.free(ciphertext);
         var tag: [TAG_LEN]u8 = undefined;
         Aead.encrypt(ciphertext, &tag, plaintext, "", nonce, key);
 
-        var blob = try self.allocator.alloc(u8, NONCE_LEN + ciphertext.len + TAG_LEN);
-        defer self.allocator.free(ciphertext);
+        const blob = try self.allocator.alloc(u8, NONCE_LEN + ciphertext.len + TAG_LEN);
+        defer self.allocator.free(blob);
         @memcpy(blob[0..NONCE_LEN], &nonce);
         @memcpy(blob[NONCE_LEN .. NONCE_LEN + ciphertext.len], ciphertext);
         @memcpy(blob[NONCE_LEN + ciphertext.len ..], &tag);
-        defer self.allocator.free(blob);
 
         const encoded = try hexEncode(self.allocator, blob);
         defer self.allocator.free(encoded);
@@ -261,4 +260,33 @@ test "SecretStore prefix helpers and bad hex" {
     try std.testing.expect(!SecretStore.isSecureEncrypted("enc:aabb"));
     try std.testing.expectError(error.BadCipher, hexDecode(std.testing.allocator, "abc"));
     try std.testing.expectError(error.BadCipher, hexDecode(std.testing.allocator, "zz"));
+}
+
+fn encryptRoundtripUnderAllocator(allocator: std.mem.Allocator) !void {
+    // Each FailingAllocator iteration gets a fresh tmpDir so the on-disk key
+    // file starts missing and the loadOrCreateKey path is exercised every time.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const state_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(state_dir);
+
+    var store = try SecretStore.new(allocator, state_dir, true);
+    defer store.deinit();
+
+    const encrypted = try store.encrypt("secret");
+    defer allocator.free(encrypted);
+
+    const decrypted = try store.decrypt(encrypted);
+    defer allocator.free(decrypted);
+
+    try std.testing.expectEqualStrings("secret", decrypted);
+}
+
+test "SecretStore.encrypt is OOM-safe (regression for double-free fix)" {
+    // Sweeps fail_index across every allocation in the encrypt+decrypt round
+    // trip. The previous overlapping errdefer/defer on `ciphertext` produced a
+    // double-free on hexEncode OOM; this sweep would crash std.testing.allocator
+    // on the offending fail_index if the regression returned.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, encryptRoundtripUnderAllocator, .{});
 }
