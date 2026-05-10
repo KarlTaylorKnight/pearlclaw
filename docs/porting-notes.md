@@ -1463,3 +1463,36 @@ The reviewer flagged this as "acceptable for pilot" — connection-pool thrash m
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 153 fixtures OK (`149 + 4 multimodal error fixtures`).
 - `cd zig && zig build test --summary all` — `101/101` unchanged (no source changes).
 - Each error fixture runs in <100ms; offline; no network.
+
+## 2026-05-10 — Phase 3-D.2: multimodal eval-runner `bytes_base64` parity fix (Claude direct)
+
+Closes the only must-fix from the second-pass review of Codex's multimodal commit (`295d798`). The Zig eval runner accepted both `bytes` (array-of-u8) and `bytes_base64` (string) for fixture file payloads; the Rust runner only accepted `bytes`. All 7 shipped fixtures used `bytes` so nothing failed today, but a future fixture authored with `bytes_base64` would have silently produced different file contents (or a hard `file byte must be u8` crash) on the Rust side, breaking the parity contract.
+
+### Source change
+
+`eval-tools/src/bin/eval-multimodal.rs:131-149` — added a `bytes_base64` branch to `file_bytes` that decodes via `base64::engine::general_purpose::STANDARD`. Falls through to the existing `bytes` array branch when absent. Mirrors `zig/src/tools/eval_multimodal.zig:117-134` exactly.
+
+`eval-tools/Cargo.toml` — added `base64 = "0.22"` (workspace-pinned version, same as `zeroclaw-providers`).
+
+### Verification
+
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 153 fixtures still OK, counts unchanged (existing fixtures use `bytes`).
+- Live parity test: a hand-authored scenario at `/tmp/mm-parity/scenario.jsonl` with 3 files using `bytes_base64="iVBORw0KGgo="` (PNG magic), piped through both runners. After driver canonicalization (`json.dumps(..., sort_keys=True)`) the outputs are byte-identical. Without canonicalization the only diff is map-key ordering (`role` vs `content` first), which the driver collapses.
+
+### What the second-pass review verified clean (no fix needed)
+
+Recorded here so a future review doesn't re-investigate the same areas:
+
+- `MultimodalConfig` substitute defaults (max_images=4, max_image_size_mb=5, allow_remote_fetch=false) match Rust `default_*` fns exactly. SF-1 confirmed resolved.
+- `effectiveLimits` clamping — Zig `@max(1, @min(..., 16/20))` is semantically identical to Rust `.clamp(1, 16/20)`.
+- All 8 `MultimodalError` variants canonicalize to the same snake-case strings on both runners. No collapse of distinct variants.
+- Canonical JSON key ordering — both runners use the same literal `writeAll` / `json!` key order for the output objects; the driver's `sort_keys` canonicalization is the parity contract, not the runners' insertion order.
+- OpenAI `image_url` deferral is clean — no half-wired code anywhere in the Zig providers tree.
+- `composeMultimodalMessage` output is byte-identical to Rust (`{cleaned_trimmed}\n\n[IMAGE:{uri}]` with `\n` between successive images).
+- `normalizeRemoteImage` — `request.deinit()` defer ordering vs `content_type` slice access is correct (`detectMime` reads the slice before the defer fires).
+- `TooManyImages` is unreachable by design (Rust trims rather than erroring); both sides agree, intentional, no fix.
+
+### Should-fix queued for a future Phase 3-D.3 (or won't-fix)
+
+- **`collapseWrappedMarker` Unicode whitespace gap** (`zig/src/providers/multimodal.zig:243-246`) — Zig skips only `' ' \t \n \r` after a newline; Rust's `char::is_whitespace()` also covers NBSP (U+00A0), thin space, etc. Narrow practical impact (only matters for terminal-paste-corrupted markers with Unicode whitespace continuations). No fixture exercises it; deferred until a real reproducer surfaces.

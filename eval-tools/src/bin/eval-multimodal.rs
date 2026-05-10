@@ -5,6 +5,8 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
 use serde_json::Value;
 use zeroclaw_api::provider::ChatMessage;
 use zeroclaw_config::schema::MultimodalConfig;
@@ -129,6 +131,11 @@ fn write_scenario_files(value: &Value) -> Result<()> {
 }
 
 fn file_bytes(value: &Value) -> Result<Vec<u8>> {
+    if let Some(encoded) = value.get("bytes_base64").and_then(Value::as_str) {
+        return BASE64_STANDARD
+            .decode(encoded)
+            .context("bytes_base64 must be valid standard base64");
+    }
     let bytes = required_array(value, "bytes")?;
     let mut out = Vec::with_capacity(bytes.len());
     for item in bytes {
