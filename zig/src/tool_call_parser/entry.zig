@@ -648,8 +648,15 @@ fn replaceAllOwned(
         rest = rest[idx + needle.len ..];
     }
     try out.appendSlice(rest);
+    // Take ownership of the new buffer FIRST, then free the input. The previous
+    // order — free(input_owned); return out.toOwnedSlice(); — would orphan the
+    // caller on toOwnedSlice OOM (input freed, no replacement returned, caller's
+    // `defer allocator.free(cleaned_text)` at the call site double-frees). Same
+    // template as removeToolCallBlocksRusty (audit commit 47a7dc8 missed this
+    // sibling helper).
+    const new_buffer = try out.toOwnedSlice();
     allocator.free(input_owned);
-    return out.toOwnedSlice();
+    return new_buffer;
 }
 
 fn findNextAny(haystack: []const u8, needles: []const []const u8) ?FoundNeedle {
@@ -692,4 +699,27 @@ test "removeToolCallBlocksRusty is OOM-safe (regression for free-then-realloc fi
     // for every fail_index, either the helper succeeds cleanly or the
     // caller's input is left intact for its own defer to free.
     try std.testing.checkAllAllocationFailures(std.testing.allocator, removeToolCallBlocksRustyOomImpl, .{});
+}
+
+fn replaceAllOwnedOomImpl(allocator: std.mem.Allocator) !void {
+    // Multiple replacements force the helper through several appendSlice
+    // calls plus the final toOwnedSlice. Caller mirrors the production
+    // pattern at entry.zig:231-238 (dupe + defer + reassign).
+    const input = try allocator.dupe(u8, "abc<X>middle<X>tail<X>end");
+    var input_consumed = false;
+    errdefer if (!input_consumed) allocator.free(input);
+
+    const cleaned = try replaceAllOwned(allocator, input, "<X>", "");
+    input_consumed = true;
+    defer allocator.free(cleaned);
+
+    try std.testing.expectEqualStrings("abcmiddletailend", cleaned);
+}
+
+test "replaceAllOwned is OOM-safe (regression for missed-by-47a7dc8 free-then-realloc)" {
+    // Audit commit 47a7dc8 missed this third sibling of removeToolCallBlocksRusty:
+    // line 651 (pre-fix) freed input_owned BEFORE out.toOwnedSlice(); a
+    // toOwnedSlice OOM then orphaned the caller. Regression sweep verifies
+    // the alloc-then-free fix.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, replaceAllOwnedOomImpl, .{});
 }

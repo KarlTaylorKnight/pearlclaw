@@ -1209,3 +1209,57 @@ Closes 4 of 6 nits queued in the e557aef post-first-pass review section. Run in 
 - `cd zig && zig build test --summary all` — `92/92 tests passed` (was 91/91; +1 removeProfile coverage test).
 - `cd zig && zig build` — clean.
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 142 fixtures OK; counts unchanged.
+
+## 2026-05-10 — Multimodal port (Codex first-pass)
+
+Closes the Phase 3-D first-pass for `rust/crates/zeroclaw-providers/src/multimodal.rs` on the Zig side. The new `zig/src/providers/multimodal.zig` ports the public marker/parser payload surface plus the sync `prepareMessagesForProvider` path for data URIs, local files, and allowed remote fetches. The config dependency on `zeroclaw_config::schema::MultimodalConfig` is represented by a small hardcoded substitute (`max_images=4`, `max_image_size_mb=5`, `allow_remote_fetch=false`) with the same effective-limit clamps as Rust.
+
+### Source changes
+
+- `zig/src/providers/multimodal.zig` — added owned `ParsedImageMarkers`, `PreparedMessages`, `MultimodalConfig`, marker parsing, Ollama payload extraction, old-image trimming, MIME detection by content-type / extension / magic bytes, size validation, base64 normalization, and local/remote image normalization.
+- `zig/src/providers/ollama/client.zig` — replaced the Phase 3 TODO in `convertUserMessageContent` with `multimodal.parseImageMarkers` + `extractOllamaImagePayload`; user image markers now populate Ollama `images`, image-only user messages become `content=null`, and placeholder markers remain ordinary text.
+- `zig/src/tools/eval_multimodal.zig` and `eval-tools/src/bin/eval-multimodal.rs` — added parity runners for parse, count/contains, Ollama payload extraction, and `prepare_messages_for_provider`.
+- `evals/fixtures/multimodal/` — added 7 fixtures: basic parsing, placeholder preservation, wrapped marker collapse, data-URI payload extraction, passthrough payload extraction, data-URI preparation, and old-image trimming with local PNG fixture files.
+- `evals/driver/run_evals.py`, `zig/build.zig`, `zig/src/providers/root.zig`, and `eval-tools/Cargo.toml` — registered the new subsystem / binaries / provider module.
+
+### Deferred
+
+- OpenAI/provider-side `image_url` wiring remains Phase 3-E; the port exposes the normalizer but only Ollama consumes image markers in this pass.
+- Live-network eval coverage remains deferred. The code path supports remote fetch when explicitly enabled, but fixtures stay offline with data URIs and temp local files.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `99/99 tests passed` (+7 multimodal module tests and +1 Ollama conversion test in this pass).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` — `783 passed; 0 failed; 1 doctest ignored`.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 149 fixtures OK (`142 + 7 multimodal`).
+
+### Pinned for review
+
+- Remote image fetch uses `std.http.Client.open` rather than `fetch` so the final response `content_type` / `content_length` are visible before body normalization. No live-network fixture was added.
+- Zig `prepareMessagesForProvider` returns canonical error tags through the eval runner, but the Zig public error surface is payload-free (`error.ImageTooLarge`, etc.) unlike Rust's contextual `MultimodalError` values.
+
+## 2026-05-10 — OOM-pattern audit follow-up (Claude direct)
+
+The original OOM-pattern audit (commit `47a7dc8`) claimed the codebase was "broadly clean" for the two patterns it chased. A Claude-direct code-review pass (Code Reviewer subagent, no commit) found the audit missed one sibling helper. This commit closes that miss and adds the matching regression test.
+
+### Source change
+
+- `zig/src/tool_call_parser/entry.zig:640-657 replaceAllOwned` — same `allocator.free(input_owned); return out.toOwnedSlice();` pattern as the audit fixed in `removeToolCallBlocksRusty` and `removeMinimaxToolcallBlock`. If `out.toOwnedSlice()` returns OOM, `input_owned` is freed and the helper unwinds; the caller's `defer allocator.free(cleaned_text)` (the standard caller pattern at `entry.zig:231-238` for the GLM tool-call branch) then double-frees. Reachable on every `cleaned_text = try replaceAllOwned(...)` loop iteration in the GLM branch. Fix: take ownership of the new buffer first, free the input second — same template the audit applied to the two sibling helpers, just missed for this third one.
+
+### Regression test
+
+- `zig/src/tool_call_parser/entry.zig` — `test "replaceAllOwned is OOM-safe (regression for missed-by-47a7dc8 free-then-realloc)"`. Multi-replacement input forces several appendSlice calls plus the final toOwnedSlice. Mirrors the production caller pattern with an `input_consumed` flag so the test setup itself stays leak-safe across the FailingAllocator sweep.
+
+### Notes
+
+- The `47a7dc8` commit's closing claim "the patterns this audit chased are now broadly fixed in the Zig codebase as it stands at `502f3e6`+" should be read with this follow-up appended: one site was missed at the time of that commit; with `replaceAllOwned` now fixed, that claim is accurate as of THIS commit's HEAD.
+- Re-grep confirms no other free-then-realloc-on-self pattern matches across the Zig codebase. The audit's Python regex was correct; the failure was a hand-classification miss (`replaceAllOwned`'s `allocator.free(input_owned)` was on a *parameter* slice rather than a `self.X` field, so it didn't pop out of the audit's mental model — the regex itself flagged it but the line wasn't classified as buggy at the time).
+- Three more code-review findings (SF-2 silent setBackoff OOM, SF-3 missing `getOpenaiRefreshBackoffRemaining` public surface, plus four nits) are bundled into a follow-up commit so this one stays scoped to the single audit miss.
+
+### Verification
+
+- `cd zig && zig build test --summary all` — `93/93 tests pass` (was 92/92; +1 regression test). Note: the working-tree count at commit time reads as 100/100 because Codex's uncommitted multimodal port (8 new tests) is also present in the tree; the 93/93 figure isolates this commit's contribution.
+- `cd zig && zig build` — clean.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 142 fixtures OK (working-tree run reports 149 because of Codex's 7 multimodal fixtures); no behavioral change on the parser surface.
