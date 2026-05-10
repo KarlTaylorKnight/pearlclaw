@@ -1350,3 +1350,86 @@ Post-first-pass review of Codex's `295d798`. Method: a Code Reviewer subagent pa
 
 - The OOM-pattern reminders in the brief were necessary but not sufficient — Codex avoided the two specific patterns from `502f3e6`/`47a7dc8` but introduced two related transfer-of-ownership patterns (the `try normalized_refs.append(try ...)` and `try refs.append(candidate)` shapes). Future briefs should add a third template: "after any `try alloc(...)` whose result is then `try`-passed to a container, wrap the alloc in `errdefer free` and pre-reserve container capacity."
 - `errdefer body.deinit()` (without a matching `defer`) is a specific anti-pattern — the helper is success-aware (only fires on error), so resources allocated for use *during* success leak silently. Worth a brief reminder for HTTP/file-IO chunks.
+
+## 2026-05-10 — zeroclaw-api/provider.rs missing types port plan (Claude direct)
+
+Brief for the Codex first-pass that fills out the remaining Rust `provider.rs` types in `zig/src/providers/provider.zig`. Run in parallel with Phase 3-D.1 (Claude-direct multimodal error fixtures + keep-alive drain — separate file boundary).
+
+### Rust source
+
+`rust/crates/zeroclaw-api/src/provider.rs` (730 LOC). The Phase 2B-1 commit (`0203c4b`) ported `Capabilities`, `ToolSpec`, `ChatRequest`, the `Provider` vtable, and the four `BASELINE_*` constants. About 12 types and one helper fn remain unported.
+
+### What's missing in Zig (verified by grep + side-by-side comparison)
+
+| Rust type / fn (provider.rs line) | Zig location today | Phase 3-F port target |
+|---|---|---|
+| `ToolCall` (47-51) | nowhere — providers have ad-hoc `AssistantToolCallFields` | `provider.zig` |
+| `TokenUsage` (54-61) | nowhere | `provider.zig` |
+| `ChatResponse` (65-89) | per-provider native types only (`openai/types.zig`, `ollama/types.zig`) | `provider.zig` (provider-neutral) |
+| `ToolResultMessage` (99-103) | nowhere | `provider.zig` |
+| `ConversationMessage` enum (108-121) | partially in `dispatcher.zig` (`Chat` + `ToolResults` only — `AssistantToolCalls` variant deferred per `porting-notes.md:200`) | extend `dispatcher.zig` to add the `AssistantToolCalls` variant + reasoning_content |
+| `StreamChunk` (125-187) | nowhere | `provider.zig` (types only — no consumer yet, marked Deferred) |
+| `StreamEvent` enum (189-211) | nowhere | `provider.zig` (types only) |
+| `StreamOptions` (215-236) | nowhere | `provider.zig` |
+| `StreamError` enum (243-258) | nowhere | `provider.zig` |
+| `StreamResult<T>` type alias (239) | n/a in Zig (use `StreamError!T` directly) | skip — Zig idiom is `error_set!T`; no alias needed |
+| `ProviderCapabilityError` (263-267) | nowhere | `provider.zig` |
+| `ProviderCapabilities` (273-281) | exists as `Capabilities` (provider.zig:28) | rename or alias — see "Pinned questions" |
+| `ToolsPayload` enum (285-296) | nowhere — providers have inline JSON building | `provider.zig` |
+| `build_tool_instructions_text` (704+) | nowhere | `provider.zig` |
+| `Provider` async trait (318+) | exists as `Provider` vtable (provider.zig:62) — sync-only, no `chat_streaming` | extend vtable with optional streaming method? — see "Pinned questions" |
+
+### Phase 3-F scope (the proposed Codex chunk)
+
+In:
+
+- Extend `zig/src/providers/provider.zig` with the missing types listed above. Keep them as standalone struct/enum decls; no behavior changes to existing types.
+- Extend `zig/src/runtime/agent/dispatcher.zig`'s `ConversationMessage` enum with the `AssistantToolCalls` variant (with `text: ?[]u8`, `tool_calls: []ToolCall`, `reasoning_content: ?[]u8`), wiring through deinit/clone for the new variant.
+- Add `build_tool_instructions_text` (camelCase: `buildToolInstructionsText`) — the prompt-guided fallback formatter. Self-contained; takes `[]const ToolSpec`, returns owned `[]u8`.
+- New eval contract: a dedicated `provider_types` subsystem (or extend `parser` since the formatting helper is parser-adjacent; pick whichever fits). 4-5 fixtures around `buildToolInstructionsText` shape parity with Rust + JSON serialization round-trip for each new struct.
+- Eval runner pair: `eval-tools/src/bin/eval-provider-types.rs` + `zig/src/tools/eval_provider_types.zig` — exercises type construction, JSON serialization (where the Rust types derive `Serialize`/`Deserialize`), and the `buildToolInstructionsText` formatter.
+
+Out (deferred):
+
+- Wiring the new types into existing providers (Ollama / OpenAI). They currently use ad-hoc per-provider DTOs that map to the wire format directly. Phase 3-G+ would migrate to the new shared types; this commit lands the types only.
+- Streaming behavior — only the **types** are ported (`StreamChunk`, `StreamEvent`, `StreamError`, `StreamOptions`). No `chat_streaming` vtable method, no provider implementation. This unlocks future streaming work without paying the libxev cost now.
+- Async trait shape — Zig's vtable stays sync. The Rust `#[async_trait]` machinery has no Zig analogue; the existing vtable's sync chat method continues to suffice for the pilot.
+
+### Pinned questions for review
+
+1. **`ProviderCapabilities` vs `Capabilities` naming.** Existing Zig uses `Capabilities` (no provider prefix). Rust uses `ProviderCapabilities`. Pick one direction:
+   (a) Rename existing `Capabilities` → `ProviderCapabilities` for parity.
+   (b) Keep `Capabilities` and add a Rust-name alias `pub const ProviderCapabilities = Capabilities;`.
+   (c) Add the new fields the Rust struct has that Zig's doesn't (`vision`, `prompt_caching` — Zig's `Capabilities` only has `native_tool_calling` per provider.zig:28). The brief should grow Capabilities to match Rust's ProviderCapabilities anyway; choose (a) or (b) afterward.
+2. **`ChatResponse` vs per-provider native response types.** Today `OpenAi.NativeResponse` and `Ollama.Response` exist as wire-shape DTOs. The provider-neutral `ChatResponse` is what callers should consume. Add it now, but each provider's `chat()` still returns the native type until a separate migration commit lands. OK?
+3. **`ToolCall` already exists in `dispatcher.zig`?** Verify before adding — if dispatcher's `ToolCall` matches the Rust shape, re-export instead of duplicate. (Rust's `ToolCall { id: String, name: String, arguments: String }`.)
+4. **`StreamError` IO variant.** Rust uses `#[from] std::io::Error`. Zig has no equivalent error-set absorption; either declare `StreamError = error{ Http, Json, InvalidSse, Provider, Io }` (lossless tag set, no embedded message) and let providers convert via `catch return`, or use an error union with a payload struct. Recommend the simpler error-set form for the pilot.
+5. **`build_tool_instructions_text` Rust source.** This function (line 704+) builds the prompt-guided fallback text by iterating tool specs and formatting their schemas. It's the LAST thing in `provider.rs` and is ~25 LOC of formatting. Verify byte-for-byte format parity in the eval — small format changes break tool-following on prompt-guided providers.
+
+### Workforce
+
+Codex first-pass candidate (~600-1000 LOC of Zig with mostly-DTOs + 1 prompt-formatter + tests + 4-5 fixtures + Rust eval bin). Comparable scope to Phase 4-A (commit `e557aef`). Pattern-mirror port — most of the work is translating Rust struct/enum shapes to Zig equivalents.
+
+### OOM-pattern reminders for the brief
+
+The post-multimodal review (commit `e492f68`) added a third template that Codex briefs should now include:
+
+> **After any `try alloc(...)` whose result is then `try`-passed to a container** (e.g. `try arraylist.append(try allocator.dupe(...))`), wrap the alloc in `errdefer free` and pre-reserve container capacity. The naive `try container.method(try alloc(...))` shape leaks the inner allocation if the outer `try` fails before the result enters the container. See `multimodal.zig:184-189` and `multimodal.zig:77-92` for the canonical fix shapes.
+
+Plus the original two patterns:
+- `getOrPut + later-key-alloc` → use `ensureUnusedCapacity` + `getOrPutAssumeCapacity` + `removeByPtr` rollback.
+- `free-then-realloc` (`allocator.free(self.X); self.X = try alloc(...)`) → alloc first, free old second.
+
+### Verification gates (per the established convention)
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — existing tests pass + new ones (target ~110/110).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-api --release` — unchanged.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all existing fixtures OK + new ones.
+
+### Anchor instruction
+
+After the first-pass, append the writeup to `docs/porting-notes.md` AFTER THE LITERAL LAST LINE OF THE FILE. The current literal last line as of this plan commit is the line ending with "**...for HTTP/file-IO chunks.**" (the closing line of the multimodal review's "Notes for future Codex briefs" bullet — wait, this commit's section IS the new last section, so the new last line will be *this* closing instruction). Append directly after.
+
+No source changes this commit — plan only.
