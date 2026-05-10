@@ -1,0 +1,1 @@
+{"op":"prepare_messages_for_provider","files":[{"path":"$TMP/fake.txt","bytes":[104,101,108,108,111]}],"messages":[{"role":"user","content":"check [IMAGE:$TMP/fake.txt]"}]}
