@@ -13,6 +13,7 @@ pub const TokenSet = types.TokenSet;
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const DEFAULT_PROFILE_NAME = "default";
 const OPENAI_REFRESH_SKEW_SECS: u64 = 90;
+const OPENAI_REFRESH_FAILURE_BACKOFF_SECS: i64 = 10;
 const OAUTH_REFRESH_MAX_ATTEMPTS: usize = 3;
 const OAUTH_REFRESH_RETRY_BASE_DELAY_MS: u64 = 350;
 
@@ -32,11 +33,18 @@ pub const SleepMillisFn = *const fn (u64) void;
 pub const AuthService = struct {
     allocator: std.mem.Allocator,
     store: AuthProfilesStore,
+    refresh_state: *RefreshState,
 
     pub fn init(allocator: std.mem.Allocator, state_dir: []const u8, encrypt_secrets: bool) !AuthService {
+        const refresh_state = try allocator.create(RefreshState);
+        errdefer allocator.destroy(refresh_state);
+        refresh_state.* = RefreshState.init(allocator);
+        errdefer refresh_state.deinit();
+        const store = try AuthProfilesStore.new(allocator, state_dir, encrypt_secrets);
         return .{
             .allocator = allocator,
-            .store = try AuthProfilesStore.new(allocator, state_dir, encrypt_secrets),
+            .store = store,
+            .refresh_state = refresh_state,
         };
     }
 
@@ -51,6 +59,8 @@ pub const AuthService = struct {
     }
 
     pub fn deinit(self: *AuthService) void {
+        self.refresh_state.deinit();
+        self.allocator.destroy(self.refresh_state);
         self.store.deinit();
         self.* = undefined;
     }
@@ -160,21 +170,51 @@ pub const AuthService = struct {
         if (!token_set.isExpiringWithin(now_unix_seconds, OPENAI_REFRESH_SKEW_SECS)) {
             return try self.allocator.dupe(u8, token_set.access_token);
         }
-        const refresh_token = token_set.refresh_token orelse return try self.allocator.dupe(u8, token_set.access_token);
+        const refresh_token_initial = token_set.refresh_token orelse return try self.allocator.dupe(u8, token_set.access_token);
 
-        // TODO(Phase 5): port Rust's per-profile refresh lock and failure
-        // backoff maps when concurrent refresh paths become part of the Zig
-        // runtime. The pilot is sync-only, so this path refreshes directly.
-        var refreshed = try refreshOpenaiAccessTokenWithRetries(self.allocator, refresh_token, postFormBody, sleepMillis);
+        // Singleflight: acquire per-profile mutex so concurrent callers
+        // serialize on this profile's refresh. After the lock, re-load
+        // from disk in case another holder of the lock already refreshed
+        // (matches Rust auth/mod.rs:188-195).
+        const refresh_lock = try self.refresh_state.lockForProfile(profile_id_value);
+        refresh_lock.lock();
+        defer refresh_lock.unlock();
+
+        var data2 = try self.store.load();
+        defer data2.deinit(self.allocator);
+        const latest_profile = data2.profiles.get(profile_id_value) orelse return null;
+        const latest_token_set = latest_profile.token_set orelse return error.BadProfile;
+
+        if (!latest_token_set.isExpiringWithin(now_unix_seconds, OPENAI_REFRESH_SKEW_SECS)) {
+            return try self.allocator.dupe(u8, latest_token_set.access_token);
+        }
+        const latest_refresh_token = latest_token_set.refresh_token orelse refresh_token_initial;
+
+        // Failure backoff: if a previous refresh failed within the backoff
+        // window, bail rather than hammering the OAuth server. Rust uses
+        // anyhow::bail! with a string; Zig returns a typed error so callers
+        // can match on it without parsing.
+        if (self.refresh_state.backoffRemainingSeconds(profile_id_value, now_unix_seconds) != null) {
+            return error.RefreshInBackoff;
+        }
+
+        var refreshed = refreshOpenaiAccessTokenWithRetries(self.allocator, latest_refresh_token, postFormBody, sleepMillis) catch |err| {
+            // setBackoff can itself OOM; if so the caller still surfaces the
+            // original refresh error rather than a less useful OOM masking it.
+            self.refresh_state.setBackoff(profile_id_value, now_unix_seconds, OPENAI_REFRESH_FAILURE_BACKOFF_SECS) catch {};
+            return err;
+        };
         defer refreshed.deinit(self.allocator);
+        self.refresh_state.clearBackoff(profile_id_value);
+
         if (refreshed.refresh_token == null) {
-            refreshed.refresh_token = try self.allocator.dupe(u8, refresh_token);
+            refreshed.refresh_token = try self.allocator.dupe(u8, latest_refresh_token);
         }
 
         var ctx = UpdateOpenaiContext{ .tokens = refreshed, .account_id = null };
         if (try openai_oauth.extractAccountIdFromJwt(self.allocator, refreshed.access_token)) |account_id| {
             ctx.account_id = account_id;
-        } else if (profile.account_id) |account_id| {
+        } else if (latest_profile.account_id) |account_id| {
             ctx.account_id = try self.allocator.dupe(u8, account_id);
         }
         defer if (ctx.account_id) |account_id| self.allocator.free(account_id);
@@ -183,6 +223,101 @@ pub const AuthService = struct {
         defer updated.deinit(self.allocator);
         if (updated.token_set) |updated_tokens| return try self.allocator.dupe(u8, updated_tokens.access_token);
         return null;
+    }
+};
+
+// Per-profile refresh singleflight and failure backoff. Sync-only for the
+// pilot; the per-profile mutex is harmless overhead in single-threaded
+// callers and the documented contract once libxev / multi-thread arrives.
+// The locks themselves live behind heap pointers (RefreshState owns them
+// for its lifetime) so callers can safely hold a *std.Thread.Mutex across
+// store I/O without worrying about the map being resized.
+const RefreshState = struct {
+    allocator: std.mem.Allocator,
+    table_mutex: std.Thread.Mutex,
+    locks: std.StringHashMap(*std.Thread.Mutex),
+    backoffs: std.StringHashMap(i64),
+
+    fn init(allocator: std.mem.Allocator) RefreshState {
+        return .{
+            .allocator = allocator,
+            .table_mutex = .{},
+            .locks = std.StringHashMap(*std.Thread.Mutex).init(allocator),
+            .backoffs = std.StringHashMap(i64).init(allocator),
+        };
+    }
+
+    fn deinit(self: *RefreshState) void {
+        var locks_it = self.locks.iterator();
+        while (locks_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.destroy(entry.value_ptr.*);
+        }
+        self.locks.deinit();
+        var backoffs_it = self.backoffs.iterator();
+        while (backoffs_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.backoffs.deinit();
+        self.* = undefined;
+    }
+
+    fn lockForProfile(self: *RefreshState, profile_id: []const u8) !*std.Thread.Mutex {
+        self.table_mutex.lock();
+        defer self.table_mutex.unlock();
+        try self.locks.ensureUnusedCapacity(1);
+        const gop = self.locks.getOrPutAssumeCapacity(profile_id);
+        if (!gop.found_existing) {
+            const mutex_ptr = self.allocator.create(std.Thread.Mutex) catch |err| {
+                self.locks.removeByPtr(gop.key_ptr);
+                return err;
+            };
+            errdefer self.allocator.destroy(mutex_ptr);
+            const key_owned = self.allocator.dupe(u8, profile_id) catch |err| {
+                self.locks.removeByPtr(gop.key_ptr);
+                return err;
+            };
+            mutex_ptr.* = .{};
+            gop.key_ptr.* = key_owned;
+            gop.value_ptr.* = mutex_ptr;
+        }
+        return gop.value_ptr.*;
+    }
+
+    fn backoffRemainingSeconds(self: *RefreshState, profile_id: []const u8, now_unix_seconds: i64) ?i64 {
+        self.table_mutex.lock();
+        defer self.table_mutex.unlock();
+        const deadline = self.backoffs.get(profile_id) orelse return null;
+        if (deadline <= now_unix_seconds) {
+            if (self.backoffs.fetchRemove(profile_id)) |entry| {
+                self.allocator.free(entry.key);
+            }
+            return null;
+        }
+        return @max(@as(i64, 1), deadline - now_unix_seconds);
+    }
+
+    fn setBackoff(self: *RefreshState, profile_id: []const u8, now_unix_seconds: i64, duration_seconds: i64) !void {
+        self.table_mutex.lock();
+        defer self.table_mutex.unlock();
+        const deadline = std.math.add(i64, now_unix_seconds, duration_seconds) catch std.math.maxInt(i64);
+        try self.backoffs.ensureUnusedCapacity(1);
+        const gop = self.backoffs.getOrPutAssumeCapacity(profile_id);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = self.allocator.dupe(u8, profile_id) catch |err| {
+                self.backoffs.removeByPtr(gop.key_ptr);
+                return err;
+            };
+        }
+        gop.value_ptr.* = deadline;
+    }
+
+    fn clearBackoff(self: *RefreshState, profile_id: []const u8) void {
+        self.table_mutex.lock();
+        defer self.table_mutex.unlock();
+        if (self.backoffs.fetchRemove(profile_id)) |entry| {
+            self.allocator.free(entry.key);
+        }
     }
 };
 
@@ -453,4 +588,76 @@ fn putProfileForTestOomImpl(allocator: std.mem.Allocator) !void {
 
 test "service.putProfileForTest is OOM-safe (regression for OOM-pattern audit)" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, putProfileForTestOomImpl, .{});
+}
+
+test "RefreshState backoff math: set, remaining, expiry-clears, clear" {
+    var state = RefreshState.init(std.testing.allocator);
+    defer state.deinit();
+
+    const now: i64 = 1_700_000_000;
+
+    // No backoff yet.
+    try std.testing.expect(state.backoffRemainingSeconds("openai-codex:default", now) == null);
+
+    // Set 10s backoff.
+    try state.setBackoff("openai-codex:default", now, 10);
+
+    // 5s into the window, remaining should be 5.
+    try std.testing.expectEqual(@as(?i64, 5), state.backoffRemainingSeconds("openai-codex:default", now + 5));
+
+    // At the deadline, remaining should be null and the entry is purged.
+    try std.testing.expect(state.backoffRemainingSeconds("openai-codex:default", now + 10) == null);
+    try std.testing.expect(state.backoffRemainingSeconds("openai-codex:default", now + 5) == null);
+
+    // Set again, then clearBackoff explicitly.
+    try state.setBackoff("openai-codex:default", now, 10);
+    state.clearBackoff("openai-codex:default");
+    try std.testing.expect(state.backoffRemainingSeconds("openai-codex:default", now + 1) == null);
+
+    // backoffRemainingSeconds always returns at least 1 even if very near the deadline.
+    try state.setBackoff("openai-codex:default", now, 10);
+    try std.testing.expectEqual(@as(?i64, 1), state.backoffRemainingSeconds("openai-codex:default", now + 9));
+}
+
+test "RefreshState lockForProfile returns the same mutex pointer for the same profile" {
+    var state = RefreshState.init(std.testing.allocator);
+    defer state.deinit();
+
+    const a1 = try state.lockForProfile("openai-codex:default");
+    const a2 = try state.lockForProfile("openai-codex:default");
+    try std.testing.expectEqual(a1, a2);
+
+    const b = try state.lockForProfile("openai-codex:other");
+    try std.testing.expect(a1 != b);
+
+    // Lock + unlock works (sanity check; no contention test in single-threaded run).
+    a1.lock();
+    a1.unlock();
+}
+
+fn refreshStateSetBackoffOomImpl(allocator: std.mem.Allocator) !void {
+    var state = RefreshState.init(allocator);
+    defer state.deinit();
+    try state.setBackoff("openai-codex:default", 1_700_000_000, 10);
+    try state.setBackoff("openai-codex:other", 1_700_000_000, 5);
+    try state.setBackoff("openai-codex:default", 1_700_000_000, 20); // update path
+}
+
+test "RefreshState.setBackoff is OOM-safe" {
+    // RefreshState's two maps use the same `getOrPut + dupe(key)` pattern as
+    // the put helpers fixed in commit 47a7dc8. Sweep verifies the same
+    // template applies here.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, refreshStateSetBackoffOomImpl, .{});
+}
+
+fn refreshStateLockForProfileOomImpl(allocator: std.mem.Allocator) !void {
+    var state = RefreshState.init(allocator);
+    defer state.deinit();
+    _ = try state.lockForProfile("openai-codex:default");
+    _ = try state.lockForProfile("openai-codex:other");
+    _ = try state.lockForProfile("openai-codex:default"); // already-existing path
+}
+
+test "RefreshState.lockForProfile is OOM-safe" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, refreshStateLockForProfileOomImpl, .{});
 }

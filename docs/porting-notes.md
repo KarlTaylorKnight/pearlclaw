@@ -1140,3 +1140,46 @@ Codex first-pass candidate (~600-1000 LOC Zig with HTTP + base64 + file I/O + te
 - `MultimodalConfig` field reads — pick whichever shape feels less invasive: hardcoded constants (matches AuthConfig pattern), or a tiny `MultimodalConfig` substitute struct passed at API boundary.
 
 No source changes this commit — plan only.
+
+## 2026-05-10 — Phase 5: refresh singleflight + backoff (Claude direct)
+
+Closes the Phase 5 TODO at `zig/src/providers/auth/service.zig:165-167` queued by the Phase 4-A + OAuth Phase 3 first-pass (commit `e557aef`). Run in parallel with the multimodal Codex first-pass (separate file boundary — `service.zig` vs `ollama/client.zig` + new `multimodal.zig`).
+
+Mirrors Rust's per-profile refresh-lock + failure-backoff machinery from `rust/crates/zeroclaw-providers/src/auth/mod.rs:188-225` and the four module-level helpers `refresh_lock_for_profile`, `refresh_backoff_remaining`, `set_refresh_backoff`, `clear_refresh_backoff` (`auth/mod.rs:473-509`). Pilot is sync-only so the per-profile mutex is harmless overhead today; the contract becomes load-bearing once the agent loop and any libxev/multi-thread caller share an `AuthService` instance.
+
+### Source changes
+
+- `zig/src/providers/auth/service.zig` — new private `RefreshState` struct (init/deinit + `lockForProfile` + `backoffRemainingSeconds` + `setBackoff` + `clearBackoff`). `AuthService` gains a `refresh_state: *RefreshState` field; `init` heap-allocates it (so a `*const AuthService` reference can mutate the state via the pointer indirection without changing existing public method signatures); `deinit` tears it down. Internal `table_mutex: std.Thread.Mutex` guards both the `locks` and `backoffs` HashMaps.
+- `zig/src/providers/auth/service.zig:147-205 getValidOpenaiAccessToken` — wired to use the new state. After the initial expiry check decides a refresh is needed: acquire the per-profile mutex, re-load the profile from disk (singleflight pattern from Rust `auth/mod.rs:188-195`), re-check expiry on the latest data, check the failure backoff (returns `error.RefreshInBackoff` if active), call `refreshOpenaiAccessTokenWithRetries`. On success, `clearBackoff`; on failure, `setBackoff(profile_id, OPENAI_REFRESH_FAILURE_BACKOFF_SECS)` and propagate the original refresh error (the backoff write itself uses a `catch {}` so an OOM there doesn't mask the more-useful refresh error).
+- New constant `OPENAI_REFRESH_FAILURE_BACKOFF_SECS: i64 = 10` (matches Rust `auth/mod.rs:23`).
+
+### Pinned shape decisions
+
+- **Per-profile mutex storage:** heap-allocated `*std.Thread.Mutex` stored in a `StringHashMap(*std.Thread.Mutex)`. Rust uses `Arc<tokio::sync::Mutex<()>>` for shared ownership across async tasks; Zig's pilot is sync, so a raw heap-pointer suffices and avoids dragging in an Arc-equivalent. The contract: `RefreshState` owns the mutexes for its lifetime; callers may hold a `*Mutex` only across calls that don't outlive `AuthService.deinit`. For sync use this is trivially satisfied. When async lands, this likely needs an `Arc`-style ref-count or a different ownership model — documented at the struct-level comment.
+- **Backoff deadline storage:** `i64` unix-second deadline in a `StringHashMap(i64)`. Rust uses `Instant`; Zig has no monotonic-clock equivalent in 0.14.1 stdlib for this kind of map, so the unix-second epoch (already used everywhere else in the auth surface for clock injection) is the natural fit. `backoffRemainingSeconds` always returns at least 1 even at the very edge of the window (matches Rust `(deadline - now).as_secs().max(1)`).
+- **Error tag:** `error.RefreshInBackoff` rather than Rust's `anyhow::bail!("OpenAI token refresh is in backoff for {remaining}s due to previous failures")`. Typed-error matches Zig idiom; callers who need the remaining-seconds value can call `backoffRemainingSeconds` themselves.
+- **The internal `getOrPut + dupe(key)` pattern:** both `setBackoff` and `lockForProfile` follow the Phase 4-A.1 / OOM-pattern-audit fix template — `ensureUnusedCapacity(1)` + `getOrPutAssumeCapacity` + `removeByPtr` rollback on key-dupe failure. Verified safe by the new `RefreshState.setBackoff is OOM-safe` and `RefreshState.lockForProfile is OOM-safe` regression sweeps.
+
+### Tests added (4 inline `test` blocks, all in service.zig)
+
+- `RefreshState backoff math: set, remaining, expiry-clears, clear` — covers all four state transitions plus the `>=1 second` floor at the deadline edge.
+- `RefreshState lockForProfile returns the same mutex pointer for the same profile` — verifies pointer-identity for repeat lookups (the singleflight contract) and a sanity lock+unlock cycle.
+- `RefreshState.setBackoff is OOM-safe` — `checkAllAllocationFailures` sweep over both first-insert and update-existing paths.
+- `RefreshState.lockForProfile is OOM-safe` — `checkAllAllocationFailures` sweep over both new-mutex-allocation and existing-lookup paths.
+
+### Out of scope
+
+- Live multi-thread test (would need a real test harness; sync-mode covered).
+- Backoff that shrinks the OpenAI retries-with-backoff inside `refreshOpenaiAccessTokenWithRetries` itself — that's intra-attempt sleep; this commit's backoff is inter-attempt across distinct refresh calls.
+- Public surface for direct backoff inspection (`getBackoffRemaining` etc.). Internal-only for now; can be promoted when a caller needs it.
+
+### Verification
+
+- `cd zig && zig build test --summary all` — `91/91 tests passed` (was 87/87; +4 Phase 5 tests, no test removed).
+- `cd zig && zig build` — clean.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 142 fixtures OK; counts unchanged. Phase 5 is purely a behavior addition on the OpenAI refresh path; existing fixtures don't exercise the refresh branch (would require a real OAuth server or a clock-injected expiry fixture, neither of which exists yet).
+
+### Future hooks
+
+- An eval fixture that exercises the refresh branch (mocking `postFormBody` via the `HttpPostFn` injection point already on `refreshOpenaiAccessTokenWithRetries`) would close the test gap. Would also let us assert backoff behavior after a simulated 5xx response.
+- The shape questions raised in this section's "Pinned shape decisions" should get re-confirmed when libxev / async lands; the current design optimizes for sync-pilot ergonomics.
