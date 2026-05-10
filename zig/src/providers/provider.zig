@@ -160,6 +160,12 @@ pub const StreamOptions = struct {
     }
 };
 
+/// Streaming error tags. Lossy vs Rust's `StreamError` (`provider.rs:243-258`):
+/// the Rust `Io(#[from] std::io::Error)` variant carries the underlying OS
+/// error code, kind, and message; the Zig `error.Io` form drops that payload.
+/// Accepted per Phase 3-F brief — adequate for the type-only port; revisit
+/// when a real streaming consumer needs to distinguish read-timeout from
+/// connection-reset etc.
 pub const StreamError = error{ Http, Json, InvalidSse, Provider, Io };
 
 /// Structured error returned when a requested capability is not supported.
@@ -584,6 +590,40 @@ test "StreamChunk helpers mirror Rust constructor semantics" {
     const event = StreamEvent.fromChunk(delta_chunk);
     try std.testing.expect(event == .text_delta);
     try std.testing.expectEqualStrings("hello world", event.text_delta.delta);
+}
+
+fn buildToolInstructionsTextOomImpl(allocator: std.mem.Allocator, tools: []const ToolSpec) !void {
+    const text = try buildToolInstructionsText(allocator, tools);
+    allocator.free(text);
+}
+
+test "buildToolInstructionsText is OOM safe across multiple tools with nested schemas" {
+    const allocator = std.testing.allocator;
+    var parsed_a = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"type\":\"object\",\"required\":[\"z\",\"a\"],\"properties\":{\"z\":{\"type\":\"string\"},\"a\":{\"type\":\"integer\"}}}",
+        .{},
+    );
+    defer parsed_a.deinit();
+    var parsed_b = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\",\"enum\":[\"x\",\"y\"]}}}",
+        .{},
+    );
+    defer parsed_b.deinit();
+
+    const tools = [_]ToolSpec{
+        .{ .name = "lookup", .description = "Look up a thing", .parameters = parsed_a.value },
+        .{ .name = "search", .description = "Search for items", .parameters = parsed_b.value },
+    };
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        buildToolInstructionsTextOomImpl,
+        .{@as([]const ToolSpec, &tools)},
+    );
 }
 
 test "buildToolInstructionsText matches Rust prompt-guided format with sorted JSON schema keys" {

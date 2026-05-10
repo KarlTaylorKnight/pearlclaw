@@ -1540,3 +1540,32 @@ Filled in the remaining provider DTO surface from `rust/crates/zeroclaw-api/src/
 - `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
 - `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-api --release` — `29` unit tests + `1` doctest passed.
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all fixtures OK, `158` total fixture inputs (`153 + 5 provider_types`).
+
+## 2026-05-10 — Phase 3-F.1: Phase 3-F second-pass review fixups (Claude direct)
+
+Closes the two should-fix items from the Phase 3-F (`f8be7fa`) second-pass review. The reviewer also flagged two confidence-88 must-fixes (JSON sort divergence and Ollama dual-track `vision`); both were verified false alarms — recorded here so a future review doesn't re-investigate.
+
+### Source changes
+
+- `zig/src/providers/provider.zig:163` — added a doc comment on `StreamError` documenting the `error.Io` payload-loss vs Rust's `Io(#[from] std::io::Error)`. Known limitation accepted by the brief; the comment marks the deviation so a future streaming consumer doesn't assume parity.
+- `zig/src/providers/provider.zig:589-619` — added `buildToolInstructionsTextOomImpl` + `test "buildToolInstructionsText is OOM safe across multiple tools with nested schemas"`. The sweep uses `std.testing.checkAllAllocationFailures` over a 2-tool input with a non-trivially-nested JSON schema (object with required + properties + a string-enum nested under properties). Exercises every allocation site: `ArrayList` growth, recursive `writeJsonCanonical` `keys` arrays, and `toOwnedSlice`. Closes the brief's "prime OOM candidate" coverage gap (no concrete leak surfaced — the existing `errdefer instructions.deinit()` plus `defer allocator.free(keys)` shape is correct).
+
+### Reviewer false alarms (verified clean — do not re-investigate)
+
+- **JSON sort divergence (Rust `serde_json` vs Zig `writeJsonCanonical`)** — claimed Rust uses `IndexMap` (insertion order) while Zig sorts. Verified at `rust/Cargo.toml:97`: `serde_json = { default-features = false, features = ["std"] }`. The `preserve_order` feature is NOT enabled, so `serde_json::Value::Object` defaults to `BTreeMap` (alphabetical). `serde_json::to_string` therefore sorts keys, matching Zig's `writeJsonCanonical`. Same correction applies to `eval_provider_types.zig`'s `writeJsonValue` — also uses sorted output via the same canonical path. **Both sides sort.**
+- **Ollama dual-track `vision` field unset** — claimed Ollama only set `supports_vision = true` and left `vision = false`. Verified at `zig/src/providers/ollama/client.zig:466`: `.vision = true` is set explicitly alongside `.supports_vision = true`. OpenAI mirrors this with `.native_tool_calling = true` alongside `.supports_native_tools = true`. Both providers populate both old + new field names consistently.
+
+### Layering observation (not a Phase 3-F regression — pre-existing)
+
+The reviewer also flagged that `ToolCall`, `TokenUsage`, `ChatResponse`, `ToolResultMessage`, and `ConversationMessage` are defined in `dispatcher.zig` and re-exported from `provider.zig`, calling this a layering inversion. Verified via `git show f8be7fa~1:zig/src/runtime/agent/dispatcher.zig`: **all five types existed in dispatcher.zig before Phase 3-F**. Codex's choice to re-export rather than duplicate is a consistent extension of the brief's pinned-question-3 guidance for `ToolCall`. The dependency arrow `provider.zig → dispatcher.zig` exists but creates no cycle (dispatcher only imports `tool_call_parser/types.zig` and `std`). A future cleanup commit could relocate the DTOs to `provider.zig`; not in scope for Phase 3-F or 3-F.1.
+
+### Skipped from the review
+
+- **N-1 (`ProviderCapabilities` alias test doesn't exercise the accessor)** — the accessors (`supportsNativeTools`, `supportsVision`, `supportsPromptCaching`) live on `Provider`, not on `Capabilities`. Exercising them requires a full vtable scaffold for what the reviewer correctly flagged as a nit. Deferred.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `107/107` tests passed (was 106/106; +1 new OOM sweep).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 158 fixtures OK, counts unchanged (no fixture additions).
