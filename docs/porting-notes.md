@@ -1263,3 +1263,42 @@ The original OOM-pattern audit (commit `47a7dc8`) claimed the codebase was "broa
 - `cd zig && zig build test --summary all` — `93/93 tests pass` (was 92/92; +1 regression test). Note: the working-tree count at commit time reads as 100/100 because Codex's uncommitted multimodal port (8 new tests) is also present in the tree; the 93/93 figure isolates this commit's contribution.
 - `cd zig && zig build` — clean.
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 142 fixtures OK (working-tree run reports 149 because of Codex's 7 multimodal fixtures); no behavioral change on the parser surface.
+
+## 2026-05-10 — Code review follow-up bundle (Claude direct)
+
+Bundles the should-fix and nit-level findings from the same Claude-direct code-review pass that surfaced the audit miss in `a0d3992`. Six items across `service.zig`, `profiles.zig`, and `eval_profiles.zig`. None of them rise to the must-fix level (no current bug is reachable by today's eval coverage), but each closes a concrete reviewer-identified concern. Run in parallel with the multimodal Codex first-pass (separate file boundary).
+
+### SF-2 — log silent setBackoff OOM
+
+`zig/src/providers/auth/service.zig:201-226 getValidOpenaiAccessToken` — the `setBackoff(...) catch {}` on the refresh-failure path is justified (don't mask the original refresh error) but the silent failure mode means a backoff that fails to record leaves the next caller free to immediately retry, defeating the rate-limit's purpose. The `catch` now logs via `std.log.warn` with the profile id and the underlying error so operators can correlate stuck-refresh patterns with allocator pressure. Behavior on the success path is unchanged.
+
+### SF-3 — public `getOpenaiRefreshBackoffRemaining` method
+
+`zig/src/providers/auth/service.zig:248-263 AuthService.getOpenaiRefreshBackoffRemaining` — added a public method that delegates to `RefreshState.backoffRemainingSeconds`. Pairs with the existing `error.RefreshInBackoff` from `getValidOpenaiAccessToken` so callers can decide whether to wait and retry vs surface the failure. The TOCTOU between this call and a subsequent `getValidOpenaiAccessToken` is harmless because the refresh path re-checks the backoff under the per-profile mutex and re-bails with `error.RefreshInBackoff` if a new backoff has been set.
+
+### SF-1 doc — clarify stale-`now`-across-lock semantics
+
+`zig/src/providers/auth/service.zig:174-187 getValidOpenaiAccessToken` — added a multi-line comment explaining that the post-lock re-check uses the same `now_unix_seconds` parameter as the pre-lock check (rather than re-sampling `std.time.timestamp()` like Rust's `Instant::now()` at `auth/mod.rs:201`). For the sync pilot the lock is essentially always uncontended so this divergence is benign; once libxev / multi-thread arrives, re-sample for the post-lock check.
+
+### N-1 — test put-helpers leak on found_existing
+
+`zig/src/providers/auth/service.zig:533-557 putProfileForTest` and `zig/src/tools/eval_profiles.zig:281-302 putProfile` — both now `gop.value_ptr.deinit(allocator)` when overwriting an existing key, matching the production `putProfileValue` template at `profiles.zig:788-789`. No fixture inserts a duplicate id today; the fix keeps the test/eval helpers aligned with the production contract.
+
+### N-3 — OOM tests force at least one rehash
+
+`zig/src/providers/auth/service.zig:680-702 refreshStateSetBackoffOomImpl` and `refreshStateLockForProfileOomImpl` — bumped both impls from 2-3 keys to 32. The default `std.StringHashMap` initial capacity grows multiple times before reaching 32 entries, so the OOM sweep now exercises the `ensureUnusedCapacity` rehash-OOM path on top of the existing `removeByPtr` rollback path. The RefreshState fix template was already correct; this confirms it under rehash pressure.
+
+### N-4 — `removeProfile` dupes provider keys before `fetchRemove`
+
+`zig/src/providers/auth/profiles.zig:255-275 removeProfile` — the previous code stored `entry.key_ptr.*` slices (live storage from the StringHashMap) in `providers_to_clear`, then called `fetchRemove(provider)` in a second pass. Today's `std.StringHashMap` happens to keep slot pointers stable across removes, but the public contract doesn't promise it. The collected provider keys are now allocator-owned dupes that get freed in a `defer` block; `fetchRemove` continues to free the map's own owned key (`entry.key`). Belt-and-braces against future stdlib changes.
+
+### Skipped from the review
+
+- N-2 (errdefer + catch readability nit on `RefreshState.lockForProfile` and `setBackoff`) — the visual-clarity argument is real but adding a `transferred` flag adds the same amount of cognitive load it removes. Left as-is.
+- Test gap Q4 (`getValidOpenaiAccessToken` end-to-end with mocked `HttpPostFn`) — bigger work, deferred to a separate Phase 5.1 commit. The two specific scenarios the reviewer named (backoff-persists-across-calls, re-check-skips-on-already-refreshed) are tracked there.
+
+### Verification
+
+- `cd zig && zig build test --summary all` — `93/93 tests pass` (no new tests; this commit modifies existing OOM-sweep impls and adds a new public method without a dedicated test). Working-tree count reads as 100/100 because Codex's uncommitted multimodal port adds 7 tests to the tree.
+- `cd zig && zig build` — clean.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 142 fixtures OK (working-tree run reports 149 with Codex's multimodal subsystem); counts unchanged on the auth surface.

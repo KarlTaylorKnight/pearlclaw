@@ -286,7 +286,11 @@ fn putProfile(allocator: std.mem.Allocator, map: *std.StringHashMap(auth.AuthPro
         tmp.deinit(allocator);
     }
     const gop = map.getOrPutAssumeCapacity(profile.id);
-    if (!gop.found_existing) {
+    if (gop.found_existing) {
+        // Deinit the existing AuthProfile we're about to overwrite — match
+        // the library `putProfileValue` template in profiles.zig.
+        gop.value_ptr.deinit(allocator);
+    } else {
         gop.key_ptr.* = allocator.dupe(u8, profile.id) catch |err| {
             map.removeByPtr(gop.key_ptr);
             return err;

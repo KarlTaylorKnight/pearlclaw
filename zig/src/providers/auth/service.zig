@@ -176,6 +176,15 @@ pub const AuthService = struct {
         // serialize on this profile's refresh. After the lock, re-load
         // from disk in case another holder of the lock already refreshed
         // (matches Rust auth/mod.rs:188-195).
+        //
+        // Note: the re-check below uses the same `now_unix_seconds` that the
+        // outer expiry check used, NOT a freshly-sampled timestamp. Rust
+        // re-samples Instant::now() inside the lock (auth/mod.rs:201), which
+        // means a second caller arriving with the same `now` reads a freshly-
+        // refreshed token's expiry as still-valid and skips its own refresh.
+        // For the sync pilot the lock is essentially always uncontended so
+        // this divergence is benign; once libxev / multi-thread arrives,
+        // re-sample `std.time.timestamp()` here for the post-lock check.
         const refresh_lock = try self.refresh_state.lockForProfile(profile_id_value);
         refresh_lock.lock();
         defer refresh_lock.unlock();
@@ -193,7 +202,9 @@ pub const AuthService = struct {
         // Failure backoff: if a previous refresh failed within the backoff
         // window, bail rather than hammering the OAuth server. Rust uses
         // anyhow::bail! with a string; Zig returns a typed error so callers
-        // can match on it without parsing.
+        // can match on it without parsing. Callers who need the remaining
+        // window can call `getOpenaiRefreshBackoffRemaining` (next pub fn)
+        // before retrying.
         if (self.refresh_state.backoffRemainingSeconds(profile_id_value, now_unix_seconds) != null) {
             return error.RefreshInBackoff;
         }
@@ -201,7 +212,16 @@ pub const AuthService = struct {
         var refreshed = refreshOpenaiAccessTokenWithRetries(self.allocator, latest_refresh_token, postFormBody, sleepMillis) catch |err| {
             // setBackoff can itself OOM; if so the caller still surfaces the
             // original refresh error rather than a less useful OOM masking it.
-            self.refresh_state.setBackoff(profile_id_value, now_unix_seconds, OPENAI_REFRESH_FAILURE_BACKOFF_SECS) catch {};
+            // The OOM is logged so operators can correlate a stuck-refresh
+            // pattern with allocator pressure (otherwise a failed setBackoff
+            // would be invisible — the next caller would not see the backoff
+            // and would retry immediately, defeating the rate-limit).
+            self.refresh_state.setBackoff(profile_id_value, now_unix_seconds, OPENAI_REFRESH_FAILURE_BACKOFF_SECS) catch |backoff_err| {
+                std.log.warn(
+                    "auth.service: failed to record refresh backoff for {s}: {s} — caller will see the original refresh error, but the next caller will not honor a backoff window for this profile.",
+                    .{ profile_id_value, @errorName(backoff_err) },
+                );
+            };
             return err;
         };
         defer refreshed.deinit(self.allocator);
@@ -223,6 +243,23 @@ pub const AuthService = struct {
         defer updated.deinit(self.allocator);
         if (updated.token_set) |updated_tokens| return try self.allocator.dupe(u8, updated_tokens.access_token);
         return null;
+    }
+
+    /// Returns the remaining backoff window (in seconds) for the given OpenAI
+    /// Codex profile id if a previous refresh failed and the backoff is still
+    /// active, else null. Pair with `getValidOpenaiAccessToken`'s
+    /// `error.RefreshInBackoff` so callers can decide whether to wait and
+    /// retry vs surface the failure. The TOCTOU window between this call and
+    /// a subsequent `getValidOpenaiAccessToken` is harmless: if the backoff
+    /// has cleared by the time the refresh runs, the refresh proceeds; if a
+    /// new backoff has been set, the refresh re-bails with
+    /// `error.RefreshInBackoff` and the caller can re-poll this method.
+    pub fn getOpenaiRefreshBackoffRemaining(
+        self: *const AuthService,
+        profile_id_value: []const u8,
+        now_unix_seconds: i64,
+    ) ?i64 {
+        return self.refresh_state.backoffRemainingSeconds(profile_id_value, now_unix_seconds);
     }
 };
 
@@ -534,7 +571,13 @@ fn putProfileForTest(allocator: std.mem.Allocator, map: *std.StringHashMap(AuthP
         tmp.deinit(allocator);
     }
     const gop = map.getOrPutAssumeCapacity(profile.id);
-    if (!gop.found_existing) {
+    if (gop.found_existing) {
+        // Deinit the existing AuthProfile we're about to overwrite — match
+        // the production `putProfileValue` template at profiles.zig:788-789.
+        // No fixture inserts the same id twice today, but the test helper
+        // should still match the production contract.
+        gop.value_ptr.deinit(allocator);
+    } else {
         gop.key_ptr.* = allocator.dupe(u8, profile.id) catch |err| {
             map.removeByPtr(gop.key_ptr);
             return err;
@@ -638,26 +681,48 @@ test "RefreshState lockForProfile returns the same mutex pointer for the same pr
 fn refreshStateSetBackoffOomImpl(allocator: std.mem.Allocator) !void {
     var state = RefreshState.init(allocator);
     defer state.deinit();
-    try state.setBackoff("openai-codex:default", 1_700_000_000, 10);
-    try state.setBackoff("openai-codex:other", 1_700_000_000, 5);
-    try state.setBackoff("openai-codex:default", 1_700_000_000, 20); // update path
+    // Insert enough distinct keys (32) to force at least one StringHashMap
+    // rehash — the default load factor + initial capacity means an 8-bucket
+    // table grows multiple times before reaching 32 entries. Without this,
+    // the OOM sweep only exercises the rollback path *within* an existing
+    // table; the rehash-OOM-during-ensureUnusedCapacity path is the more
+    // interesting case (commit a0d3992 review note N-3).
+    var i: usize = 0;
+    while (i < 32) : (i += 1) {
+        var key_buf: [32]u8 = undefined;
+        const key = try std.fmt.bufPrint(&key_buf, "openai-codex:p{d}", .{i});
+        try state.setBackoff(key, 1_700_000_000, 10);
+    }
+    // Re-set a subset to exercise the update branch (found_existing).
+    var j: usize = 0;
+    while (j < 4) : (j += 1) {
+        var key_buf: [32]u8 = undefined;
+        const key = try std.fmt.bufPrint(&key_buf, "openai-codex:p{d}", .{j});
+        try state.setBackoff(key, 1_700_000_000, 20);
+    }
 }
 
-test "RefreshState.setBackoff is OOM-safe" {
+test "RefreshState.setBackoff is OOM-safe (32 keys to force rehash)" {
     // RefreshState's two maps use the same `getOrPut + dupe(key)` pattern as
     // the put helpers fixed in commit 47a7dc8. Sweep verifies the same
-    // template applies here.
+    // template applies here AND covers the rehash-OOM path that smaller
+    // tests would skip.
     try std.testing.checkAllAllocationFailures(std.testing.allocator, refreshStateSetBackoffOomImpl, .{});
 }
 
 fn refreshStateLockForProfileOomImpl(allocator: std.mem.Allocator) !void {
     var state = RefreshState.init(allocator);
     defer state.deinit();
-    _ = try state.lockForProfile("openai-codex:default");
-    _ = try state.lockForProfile("openai-codex:other");
-    _ = try state.lockForProfile("openai-codex:default"); // already-existing path
+    var i: usize = 0;
+    while (i < 32) : (i += 1) {
+        var key_buf: [32]u8 = undefined;
+        const key = try std.fmt.bufPrint(&key_buf, "openai-codex:p{d}", .{i});
+        _ = try state.lockForProfile(key);
+    }
+    // Already-existing-key path.
+    _ = try state.lockForProfile("openai-codex:p0");
 }
 
-test "RefreshState.lockForProfile is OOM-safe" {
+test "RefreshState.lockForProfile is OOM-safe (32 keys to force rehash)" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, refreshStateLockForProfileOomImpl, .{});
 }

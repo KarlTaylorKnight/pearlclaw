@@ -255,12 +255,23 @@ pub const AuthProfilesStore = struct {
         // previous code used an empty-string sentinel + a sweep helper that
         // silently swallowed OOM via `catch {}`. This pattern propagates
         // OOM cleanly and skips the per-match empty-string allocation.
-        var providers_to_clear = std.ArrayList([]const u8).init(self.allocator);
-        defer providers_to_clear.deinit();
+        //
+        // The collected provider keys are dupe'd into `providers_to_clear`
+        // because `data.active_profiles.fetchRemove(provider)` invalidates
+        // the original key_ptr storage as it runs — even if today's
+        // StringHashMap implementation happens to keep slots stable across
+        // a remove, the public contract doesn't promise it. Belt-and-braces.
+        var providers_to_clear = std.ArrayList([]u8).init(self.allocator);
+        defer {
+            for (providers_to_clear.items) |provider| self.allocator.free(provider);
+            providers_to_clear.deinit();
+        }
         var it = data.active_profiles.iterator();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.value_ptr.*, id)) {
-                try providers_to_clear.append(entry.key_ptr.*);
+                const provider_owned = try self.allocator.dupe(u8, entry.key_ptr.*);
+                errdefer self.allocator.free(provider_owned);
+                try providers_to_clear.append(provider_owned);
             }
         }
         for (providers_to_clear.items) |provider| {
