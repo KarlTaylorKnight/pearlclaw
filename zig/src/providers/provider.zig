@@ -15,18 +15,20 @@
 //! ToolDispatcher.
 
 const std = @import("std");
-const dispatcher = @import("../runtime/agent/dispatcher.zig");
+const types = @import("types.zig");
 
 pub const BASELINE_TEMPERATURE: f64 = 0.7;
 pub const BASELINE_MAX_TOKENS: u32 = 4096;
 pub const BASELINE_TIMEOUT_SECS: u64 = 120;
 pub const BASELINE_WIRE_API: []const u8 = "chat_completions";
 
-pub const ToolCall = dispatcher.ToolCall;
-pub const TokenUsage = dispatcher.TokenUsage;
-pub const ChatResponse = dispatcher.ChatResponse;
-pub const ToolResultMessage = dispatcher.ToolResultMessage;
-pub const ConversationMessage = dispatcher.ConversationMessage;
+pub const ToolCall = types.ToolCall;
+pub const TokenUsage = types.TokenUsage;
+pub const ChatResponse = types.ChatResponse;
+pub const ChatMessage = types.ChatMessage;
+pub const ToolResultMessage = types.ToolResultMessage;
+pub const AssistantToolCallsMessage = types.AssistantToolCallsMessage;
+pub const ConversationMessage = types.ConversationMessage;
 
 /// Static, provider-family defaults. Each provider declares deltas from
 /// the baseline; unset fields take the struct defaults below, which mirror
@@ -65,7 +67,7 @@ pub const ToolSpec = struct {
 /// for providers that need it (OpenAI). Providers that don't honor a field
 /// (e.g., Ollama ignores `tool_choice`) silently drop it.
 pub const ChatRequest = struct {
-    messages: []const dispatcher.ChatMessage,
+    messages: []const ChatMessage,
     tools: ?[]const ToolSpec = null,
     tool_choice: ?[]const u8 = null,
 };
@@ -215,14 +217,14 @@ pub const Provider = struct {
         chatWithHistory: *const fn (
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
-            messages: []const dispatcher.ChatMessage,
+            messages: []const ChatMessage,
             model: []const u8,
             temperature: ?f64,
         ) anyerror![]u8,
         chatWithTools: *const fn (
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
-            messages: []const dispatcher.ChatMessage,
+            messages: []const ChatMessage,
             tools: []const ToolSpec,
             model: []const u8,
             temperature: ?f64,
@@ -258,7 +260,7 @@ pub const Provider = struct {
     pub fn chatWithHistory(
         self: Provider,
         allocator: std.mem.Allocator,
-        messages: []const dispatcher.ChatMessage,
+        messages: []const ChatMessage,
         model: []const u8,
         temperature: ?f64,
     ) ![]u8 {
@@ -268,7 +270,7 @@ pub const Provider = struct {
     pub fn chatWithTools(
         self: Provider,
         allocator: std.mem.Allocator,
-        messages: []const dispatcher.ChatMessage,
+        messages: []const ChatMessage,
         tools: []const ToolSpec,
         model: []const u8,
         temperature: ?f64,
@@ -439,7 +441,7 @@ test "Provider vtable dispatches to concrete receiver across all four methods" {
         fn chatWithHistory(
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
-            messages: []const dispatcher.ChatMessage,
+            messages: []const ChatMessage,
             model: []const u8,
             temperature: ?f64,
         ) anyerror![]u8 {
@@ -454,7 +456,7 @@ test "Provider vtable dispatches to concrete receiver across all four methods" {
         fn chatWithTools(
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
-            messages: []const dispatcher.ChatMessage,
+            messages: []const ChatMessage,
             tools: []const ToolSpec,
             model: []const u8,
             temperature: ?f64,
@@ -511,7 +513,7 @@ test "Provider vtable dispatches to concrete receiver across all four methods" {
     }
 
     {
-        const history = [_]dispatcher.ChatMessage{
+        const history = [_]ChatMessage{
             .{ .role = "user", .content = "hi" },
             .{ .role = "assistant", .content = "hello" },
         };
@@ -523,7 +525,7 @@ test "Provider vtable dispatches to concrete receiver across all four methods" {
     }
 
     {
-        const history = [_]dispatcher.ChatMessage{.{ .role = "user", .content = "x" }};
+        const history = [_]ChatMessage{.{ .role = "user", .content = "x" }};
         const tools = [_]ToolSpec{};
         var resp = try handle.chatWithTools(std.testing.allocator, &history, &tools, "m", 0.5);
         defer resp.deinit(std.testing.allocator);
@@ -532,7 +534,7 @@ test "Provider vtable dispatches to concrete receiver across all four methods" {
     }
 
     {
-        const history = [_]dispatcher.ChatMessage{.{ .role = "user", .content = "x" }};
+        const history = [_]ChatMessage{.{ .role = "user", .content = "x" }};
         var resp = try handle.chat(
             std.testing.allocator,
             .{ .messages = &history, .tool_choice = "auto" },

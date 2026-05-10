@@ -1569,3 +1569,40 @@ The reviewer also flagged that `ToolCall`, `TokenUsage`, `ChatResponse`, `ToolRe
 - `cd zig && zig build test --summary all` — `107/107` tests passed (was 106/106; +1 new OOM sweep).
 - `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 158 fixtures OK, counts unchanged (no fixture additions).
+
+## 2026-05-10 — Phase 3-F.2: relocate provider DTOs to providers/types.zig (Claude direct)
+
+Closes the layering observation from the Phase 3-F second-pass review. The seven provider DTOs (`ToolCall`, `TokenUsage`, `ChatResponse`, `ChatMessage`, `ToolResultMessage`, `AssistantToolCallsMessage`, `ConversationMessage`) plus their three private clone helpers (`cloneToolCalls`, `freeToolCalls`, `cloneToolResultMessages`) lived in `runtime/agent/dispatcher.zig` since the parser/dispatcher pilot. Phase 3-F made this visible by having `providers/provider.zig` import from `runtime/agent/dispatcher.zig` to re-export — an inversion of the natural dependency direction (runtime should depend on providers, not the other way around).
+
+### Source changes
+
+- `zig/src/providers/types.zig` — **new file**. Holds the seven DTO definitions and three helper fns, copied verbatim from `dispatcher.zig` lines 22-208 (no behavior change).
+- `zig/src/runtime/agent/dispatcher.zig` — replaced the type definitions with seven `pub const X = provider_types.X;` aliases. Aliases preserve every consumer's existing `dispatcher.X` import path (multimodal.zig, ollama/client.zig, openai/client.zig, eval_dispatcher.zig, eval_providers.zig, runtime/agent/root.zig). `ToolExecutionResult` stays in `dispatcher.zig` because it is a dispatcher-internal intermediate, not a provider DTO.
+- `zig/src/providers/provider.zig` — replaced `@import("../runtime/agent/dispatcher.zig")` with `@import("types.zig")`. The seven public re-exports now point at `types.X`. Six internal `dispatcher.ChatMessage` references in function signatures and tests were updated to bare `ChatMessage` (the in-file alias). Also added `pub const ChatMessage` and `pub const AssistantToolCallsMessage` to provider.zig's surface (Codex's Phase 3-F only re-exported five of the seven — these two completion adds were trivial).
+
+### What did NOT change
+
+- No consumer file (multimodal.zig, ollama/client.zig, openai/client.zig, eval_dispatcher.zig, eval_providers.zig, runtime/agent/root.zig) was touched. They continue to use `dispatcher.ToolCall` etc. via the new alias path. Future commits can migrate them organically as they're touched for other reasons.
+- No tests moved. The clone/deinit/OOM tests remain in `dispatcher.zig`, exercising the types through the alias — the public API is unchanged regardless of where types are defined.
+- No behavior change. This is purely a file-organization fix.
+
+### Dependency graph after this commit
+
+```
+providers/types.zig          (DTOs — leaf)
+providers/provider.zig   →   providers/types.zig
+providers/multimodal.zig →   runtime/agent/dispatcher.zig (legacy import; via aliases reaches types.zig)
+providers/ollama/client.zig → runtime/agent/dispatcher.zig (legacy)
+providers/openai/client.zig → runtime/agent/dispatcher.zig (legacy)
+runtime/agent/dispatcher.zig → providers/types.zig
+runtime/agent/dispatcher.zig → tool_call_parser/types.zig
+```
+
+The provider→runtime back-reference in `provider.zig` is removed. The remaining provider→runtime imports in multimodal/ollama/openai are legacy and can be cleaned up incrementally; they don't create cycles because `dispatcher.zig` no longer needs anything from those files.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `107/107` tests passed, unchanged.
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 158 fixtures OK, counts unchanged.
