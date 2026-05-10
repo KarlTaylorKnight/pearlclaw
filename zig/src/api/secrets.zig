@@ -78,10 +78,6 @@ pub const SecretStore = struct {
         return .{ .plaintext = try self.allocator.dupe(u8, value) };
     }
 
-    pub fn decrypt_and_migrate(self: *const SecretStore, value: []const u8) !DecryptAndMigrateResult {
-        return self.decryptAndMigrate(value);
-    }
-
     pub fn needsMigration(value: []const u8) bool {
         return std.mem.startsWith(u8, value, "enc:");
     }
@@ -132,7 +128,14 @@ pub const SecretStore = struct {
         defer self.allocator.free(contents);
 
         const trimmed = std.mem.trim(u8, contents, " \t\r\n");
-        const decoded = try hexDecode(self.allocator, trimmed);
+        // hexDecode's BadCipher means "this string isn't valid hex", which at
+        // this layer reads as a corrupted key file rather than a ciphertext
+        // problem. Translate so callers see a uniform error tag for any
+        // unusable on-disk key. OOM is passed through unchanged.
+        const decoded = hexDecode(self.allocator, trimmed) catch |err| switch (err) {
+            error.BadCipher => return error.KeyFileCorrupt,
+            else => return err,
+        };
         defer self.allocator.free(decoded);
         if (decoded.len != KEY_LEN) return error.KeyFileCorrupt;
         var key: [KEY_LEN]u8 = undefined;
@@ -150,12 +153,13 @@ pub const SecretStore = struct {
         const encoded = try hexEncode(self.allocator, &key);
         defer self.allocator.free(encoded);
 
-        // Unix ports set the key file mode to 0600. The Rust Windows ACL path
-        // is intentionally deferred for the Zig pilot.
+        // Unix ports set the key file mode to 0600 via createFile's mode
+        // flag; createFile honors that mode at open time so a follow-up chmod
+        // is redundant (umask never grants bits we didn't already pass). The
+        // Rust Windows ACL path is intentionally deferred for the Zig pilot.
         var file = try std.fs.cwd().createFile(self.key_path, .{ .truncate = true, .mode = 0o600 });
         defer file.close();
         try file.writeAll(encoded);
-        try file.chmod(0o600);
         return key;
     }
 };

@@ -249,14 +249,27 @@ pub const AuthProfilesStore = struct {
         }
         if (!removed) return false;
 
+        // Collect provider keys whose active-profile id matches the one we
+        // just removed, then drop them in a second pass. Mutating the map
+        // during the first iteration would invalidate the iterator; the
+        // previous code used an empty-string sentinel + a sweep helper that
+        // silently swallowed OOM via `catch {}`. This pattern propagates
+        // OOM cleanly and skips the per-match empty-string allocation.
+        var providers_to_clear = std.ArrayList([]const u8).init(self.allocator);
+        defer providers_to_clear.deinit();
         var it = data.active_profiles.iterator();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.value_ptr.*, id)) {
-                self.allocator.free(entry.value_ptr.*);
-                entry.value_ptr.* = try self.allocator.dupe(u8, "");
+                try providers_to_clear.append(entry.key_ptr.*);
             }
         }
-        removeEmptyActiveProfiles(self.allocator, &data.active_profiles);
+        for (providers_to_clear.items) |provider| {
+            if (data.active_profiles.fetchRemove(provider)) |entry| {
+                self.allocator.free(entry.key);
+                self.allocator.free(entry.value);
+            }
+        }
+
         data.updated_at_unix_seconds = now_unix_seconds;
         try self.saveLocked(&data);
         return true;
@@ -818,21 +831,6 @@ fn deinitStringMap(allocator: std.mem.Allocator, map: *std.StringHashMap([]u8)) 
     map.deinit();
 }
 
-fn removeEmptyActiveProfiles(allocator: std.mem.Allocator, map: *std.StringHashMap([]u8)) void {
-    var to_remove = std.ArrayList([]u8).init(allocator);
-    defer to_remove.deinit();
-    var it = map.iterator();
-    while (it.next()) |entry| {
-        if (entry.value_ptr.*.len == 0) to_remove.append(entry.key_ptr.*) catch {};
-    }
-    for (to_remove.items) |key| {
-        if (map.fetchRemove(key)) |entry| {
-            allocator.free(entry.key);
-            allocator.free(entry.value);
-        }
-    }
-}
-
 fn cloneOptional(allocator: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
     if (value) |inner| return try allocator.dupe(u8, inner);
     return null;
@@ -1090,6 +1088,46 @@ test "AuthProfilesStore.load is OOM-safe (regression for struct-literal leak fix
     // literal leaked partially-allocated owned strings if any later field's
     // alloc failed mid-construction.
     try std.testing.checkAllAllocationFailures(std.testing.allocator, loadOomImpl, .{});
+}
+
+test "AuthProfilesStore.removeProfile clears matching active_profiles entries" {
+    // No prior test exercised the active-profile cleanup branch in
+    // removeProfile. This test covers both the happy path (remove a profile
+    // that's currently active in two providers) and the no-match path.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const state_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(state_dir);
+
+    var store = try AuthProfilesStore.new(std.testing.allocator, state_dir, false);
+    defer store.deinit();
+
+    var profile = try AuthProfile.newToken(std.testing.allocator, "openai", "default", "secret", 1_700_000_000);
+    defer profile.deinit(std.testing.allocator);
+    try store.upsertProfile(&profile, true, 1_700_000_000);
+
+    // A second provider registered with the same profile id, exercising
+    // the multi-provider cleanup branch.
+    try store.setActiveProfile("openai-codex", profile.id, 1_700_000_000);
+
+    {
+        var data_pre = try store.load();
+        defer data_pre.deinit(std.testing.allocator);
+        try std.testing.expect(data_pre.active_profiles.contains("openai"));
+        try std.testing.expect(data_pre.active_profiles.contains("openai-codex"));
+    }
+
+    const removed = try store.removeProfile(profile.id, 1_700_000_010);
+    try std.testing.expect(removed);
+
+    var data_post = try store.load();
+    defer data_post.deinit(std.testing.allocator);
+    try std.testing.expect(!data_post.profiles.contains(profile.id));
+    // Both active_profiles entries must be gone — the previous empty-string
+    // sentinel left them as `""` rather than removing them, and the
+    // sweep helper silently swallowed OOM.
+    try std.testing.expect(!data_post.active_profiles.contains("openai"));
+    try std.testing.expect(!data_post.active_profiles.contains("openai-codex"));
 }
 
 test "AuthProfilesStore writePersistedLocked recovers from rename failure (regression for double-close fix)" {

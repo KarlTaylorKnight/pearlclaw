@@ -1183,3 +1183,29 @@ Mirrors Rust's per-profile refresh-lock + failure-backoff machinery from `rust/c
 
 - An eval fixture that exercises the refresh branch (mocking `postFormBody` via the `HttpPostFn` injection point already on `refreshOpenaiAccessTokenWithRetries`) would close the test gap. Would also let us assert backoff behavior after a simulated 5xx response.
 - The shape questions raised in this section's "Pinned shape decisions" should get re-confirmed when libxev / async lands; the current design optimizes for sync-pilot ergonomics.
+
+## 2026-05-10 — Style nits cleanup batch (Claude direct)
+
+Closes 4 of 6 nits queued in the e557aef post-first-pass review section. Run in parallel with the multimodal Codex first-pass (separate file boundary — `secrets.zig` + `profiles.zig` vs Codex's new `multimodal.zig` + `ollama/client.zig`).
+
+### Source changes
+
+- `zig/src/api/secrets.zig:135-141 SecretStore.loadOrCreateKey` — `hexDecode`'s `error.BadCipher` now translates to `error.KeyFileCorrupt` at this layer, since at the key-file-loader level "the on-disk content isn't valid hex" reads as a corrupted key file rather than a ciphertext problem. OOM passes through unchanged.
+- `zig/src/api/secrets.zig:155-160 SecretStore.createKey` — removed the redundant `try file.chmod(0o600)` after `createFile(.{ .truncate = true, .mode = 0o600 })`. `createFile` honors the mode flag at open time on POSIX; umask never grants bits we didn't already pass, so the explicit chmod was a no-op. Comment updated to explain.
+- `zig/src/api/secrets.zig:81-83` — removed the snake_case `decrypt_and_migrate` alias. Verified zero callers; the camelCase `decryptAndMigrate` was the canonical entry point already.
+- `zig/src/providers/auth/profiles.zig:237-274 AuthProfilesStore.removeProfile` — refactored to use a "collect provider keys, then remove in a second pass" pattern instead of the previous empty-string sentinel + sweep helper. Mutating the map during iteration is unsafe, so the previous code marked entries with a freshly-allocated empty string then swept via `removeEmptyActiveProfiles` (which silently swallowed OOM via `catch {}`). New pattern: collect matching provider keys into a `std.ArrayList([]const u8)`, then in a second loop `fetchRemove` each. Saves one `dupe(u8, "")` allocation per match and propagates OOM cleanly. The old sweep helper is now dead code and removed.
+- `zig/src/providers/auth/profiles.zig:807-820 removeEmptyActiveProfiles` — deleted (dead code after the `removeProfile` refactor).
+
+### Skipped from the queued nit list
+
+- `new`/`init` aliases on `SecretStore` / `AuthProfilesStore` / `AuthService` — picking one and removing the other touches several callers (eval runners + tests) and the choice between `init` (Zig stdlib idiom) and `new` (current codebase plurality) is contentious. Punted to a separate cleanup with explicit consensus on which direction.
+
+### Tests added
+
+- `zig/src/providers/auth/profiles.zig` — `test "AuthProfilesStore.removeProfile clears matching active_profiles entries"`. No prior test exercised this branch. Covers both the multi-provider cleanup case (one profile id active in two providers) and verifies post-removal that both `active_profiles` entries are gone (the previous empty-string sentinel left them as `""`, which would have failed this assertion).
+
+### Verification
+
+- `cd zig && zig build test --summary all` — `92/92 tests passed` (was 91/91; +1 removeProfile coverage test).
+- `cd zig && zig build` — clean.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 142 fixtures OK; counts unchanged.
