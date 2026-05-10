@@ -1433,3 +1433,33 @@ Plus the original two patterns:
 After the first-pass, append the writeup to `docs/porting-notes.md` AFTER THE LITERAL LAST LINE OF THE FILE. The current literal last line as of this plan commit is the line ending with "**...for HTTP/file-IO chunks.**" (the closing line of the multimodal review's "Notes for future Codex briefs" bullet — wait, this commit's section IS the new last section, so the new last line will be *this* closing instruction). Append directly after.
 
 No source changes this commit — plan only.
+
+## 2026-05-10 — Phase 3-D.1: multimodal error fixtures (Claude direct)
+
+Closes the SF-2 test gap from the multimodal first-pass review (commit `e492f68`). Adds four fixtures that exercise the multimodal error tags previously untested by the offline eval suite. Run in parallel with the Codex first-pass on `zeroclaw-api/provider.rs` missing types (separate file boundary — fixtures only here, no source changes).
+
+### Fixtures added (`evals/fixtures/multimodal/`)
+
+- `scenario-error-invalid-data-uri` — `[IMAGE:data:image/png,abcd==]` (data URI missing `;base64` segment) → `multimodal_invalid_marker`. Triggered at `multimodal.zig:365` in `normalizeDataUri`.
+- `scenario-error-remote-fetch-disabled` — `[IMAGE:https://example.com/img.png]` with default config (allow_remote_fetch=false) → `multimodal_remote_fetch_disabled`. Triggered at `multimodal.zig:353`.
+- `scenario-error-image-source-not-found` — `[IMAGE:$TMP/never-created.png]` (no file written via `files`) → `multimodal_image_source_not_found`. Triggered at `multimodal.zig:426` (`error.FileNotFound` mapping).
+- `scenario-error-unsupported-mime` — `[IMAGE:$TMP/fake.txt]` with bytes `[104,101,108,108,111]` ("hello") → `multimodal_unsupported_mime`. The `.txt` extension isn't in `mimeFromExtension`'s image table, the bytes don't match `mimeFromMagic`'s known signatures (PNG/JPEG/WebP/GIF/BMP), so `detectMime` returns null and `normalizeLocalImage` raises `error.UnsupportedMime`.
+
+All 4 fixtures pass on first try with byte-equal output between Rust and Zig runners (the canonical eval contract).
+
+### Skipped from the SF-2 list
+
+- **`multimodal_image_too_large`** — would require a fixture file >1 MB (effectiveLimits clamps `max_image_size_mb >= 1`). Awkward fixture size; deferred.
+- **`multimodal_local_read_failed`** — hard to trigger deterministically from a pure fixture (permission-bit manipulation isn't fixture-friendly cross-platform). Deferred.
+- **`multimodal_remote_fetch_failed`** — would require a live network endpoint; live-network fixtures explicitly out of scope.
+- **`multimodal_too_many_images`** — *unreachable* in current code: the `MultimodalError.TooManyImages` variant is declared on both Rust (`multimodal.rs:25`) and Zig (`multimodal.zig:12`) sides but never raised. The `effectiveLimits` clamp + the `trimOldImages` reduce-to-limit guarantee mean `prepareMessagesForProvider` has no code path that errors with this tag. Documented for a future cleanup; left as-is for now to maintain Rust↔Zig enum parity (removing only from Zig would create cross-language divergence).
+
+### SF-3 (keep-alive pool drain on early-return) — explicitly deferred
+
+The reviewer flagged this as "acceptable for pilot" — connection-pool thrash matters under load, not in offline eval scenarios. Tracked for a future Phase 5.x or Phase 3-E commit when a real client wires this path up.
+
+### Verification
+
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 153 fixtures OK (`149 + 4 multimodal error fixtures`).
+- `cd zig && zig build test --summary all` — `101/101` unchanged (no source changes).
+- Each error fixture runs in <100ms; offline; no network.
