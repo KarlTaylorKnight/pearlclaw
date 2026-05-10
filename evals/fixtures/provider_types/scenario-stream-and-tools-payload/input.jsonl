@@ -1,0 +1,5 @@
+{"op":"stream_shapes","delta":"hello stream!","reasoning":"thinking aloud","error":"provider failed","enabled":true}
+{"op":"tools_payload","payload":{"type":"Gemini","data":{"function_declarations":[{"name":"lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}]}}}
+{"op":"tools_payload","payload":{"type":"Anthropic","data":{"tools":[{"name":"lookup","input_schema":{"type":"object"}}]}}}
+{"op":"tools_payload","payload":{"type":"OpenAI","data":{"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}}}
+{"op":"tools_payload","payload":{"type":"PromptGuided","data":{"instructions":"Use <tool_call> tags."}}}

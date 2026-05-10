@@ -463,6 +463,7 @@ const ollama_vtable: provider_handle.Provider.VTable = .{
         .default_base_url = BASE_URL,
         .supports_native_tools = false,
         .supports_vision = true,
+        .vision = true,
     },
 };
 

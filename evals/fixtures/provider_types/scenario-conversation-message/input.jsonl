@@ -1,0 +1,3 @@
+{"op":"serialize_conversation_message","message":{"type":"Chat","data":{"role":"user","content":"hello"}}}
+{"op":"serialize_conversation_message","message":{"type":"AssistantToolCalls","data":{"text":"I'll inspect it","tool_calls":[{"id":"tc-1","name":"shell","arguments":"{\"command\":\"pwd\"}"},{"id":"tc-2","name":"read_file","arguments":"{\"path\":\"README.md\"}"}],"reasoning_content":"need cwd first"}}}
+{"op":"serialize_conversation_message","message":{"type":"ToolResults","data":[{"tool_call_id":"tc-1","content":"/tmp/project"},{"tool_call_id":"tc-2","content":"# README"}]}}

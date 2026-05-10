@@ -406,6 +406,7 @@ const openai_vtable: provider_handle.Provider.VTable = .{
     .capabilities = .{
         .default_base_url = BASE_URL,
         .supports_native_tools = true,
+        .native_tool_calling = true,
     },
 };
 

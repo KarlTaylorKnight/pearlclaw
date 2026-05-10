@@ -26,6 +26,15 @@ pub const ToolCall = struct {
     name: []const u8,
     arguments: []const u8, // JSON string
 
+    pub fn clone(self: ToolCall, allocator: std.mem.Allocator) !ToolCall {
+        const id = try allocator.dupe(u8, self.id);
+        errdefer allocator.free(id);
+        const name = try allocator.dupe(u8, self.name);
+        errdefer allocator.free(name);
+        const arguments = try allocator.dupe(u8, self.arguments);
+        return .{ .id = id, .name = name, .arguments = arguments };
+    }
+
     pub fn deinit(self: *ToolCall, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.name);
@@ -48,6 +57,14 @@ pub const ChatResponse = struct {
     reasoning_content: ?[]const u8 = null,
     owned: bool = false,
 
+    pub fn hasToolCalls(self: ChatResponse) bool {
+        return self.tool_calls.len != 0;
+    }
+
+    pub fn textOrEmpty(self: ChatResponse) []const u8 {
+        return self.text orelse "";
+    }
+
     pub fn deinit(self: *ChatResponse, allocator: std.mem.Allocator) void {
         if (!self.owned) {
             self.* = undefined;
@@ -69,6 +86,13 @@ pub const ChatMessage = struct {
     role: []const u8,
     content: []const u8,
 
+    pub fn clone(self: ChatMessage, allocator: std.mem.Allocator) !ChatMessage {
+        const role = try allocator.dupe(u8, self.role);
+        errdefer allocator.free(role);
+        const content = try allocator.dupe(u8, self.content);
+        return .{ .role = role, .content = content };
+    }
+
     pub fn deinit(self: *ChatMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.role);
         allocator.free(self.content);
@@ -80,9 +104,45 @@ pub const ToolResultMessage = struct {
     tool_call_id: []const u8,
     content: []const u8,
 
+    pub fn clone(self: ToolResultMessage, allocator: std.mem.Allocator) !ToolResultMessage {
+        const tool_call_id = try allocator.dupe(u8, self.tool_call_id);
+        errdefer allocator.free(tool_call_id);
+        const content = try allocator.dupe(u8, self.content);
+        return .{ .tool_call_id = tool_call_id, .content = content };
+    }
+
     pub fn deinit(self: *ToolResultMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.tool_call_id);
         allocator.free(self.content);
+        self.* = undefined;
+    }
+};
+
+pub const AssistantToolCallsMessage = struct {
+    text: ?[]const u8 = null,
+    tool_calls: []ToolCall = &.{},
+    reasoning_content: ?[]const u8 = null,
+
+    pub fn clone(self: AssistantToolCallsMessage, allocator: std.mem.Allocator) !AssistantToolCallsMessage {
+        const text = if (self.text) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (text) |value| allocator.free(value);
+
+        const tool_calls = try cloneToolCalls(allocator, self.tool_calls);
+        errdefer freeToolCalls(allocator, tool_calls);
+
+        const reasoning_content = if (self.reasoning_content) |value| try allocator.dupe(u8, value) else null;
+
+        return .{
+            .text = text,
+            .tool_calls = tool_calls,
+            .reasoning_content = reasoning_content,
+        };
+    }
+
+    pub fn deinit(self: *AssistantToolCallsMessage, allocator: std.mem.Allocator) void {
+        if (self.text) |text| allocator.free(text);
+        freeToolCalls(allocator, self.tool_calls);
+        if (self.reasoning_content) |reasoning| allocator.free(reasoning);
         self.* = undefined;
     }
 };
@@ -96,23 +156,77 @@ pub const ToolExecutionResult = struct {
 };
 
 /// Subset of zeroclaw_api::provider::ConversationMessage exercised by the
-/// pilot. AssistantToolCalls deferred — only used by to_provider_messages
-/// which is not in pilot scope.
+/// pilot. The AssistantToolCalls variant preserves native tool-call history
+/// for future provider-message conversion.
 pub const ConversationMessage = union(enum) {
     chat: ChatMessage,
+    assistant_tool_calls: AssistantToolCallsMessage,
     tool_results: []ToolResultMessage,
+
+    pub fn clone(self: ConversationMessage, allocator: std.mem.Allocator) !ConversationMessage {
+        return switch (self) {
+            .chat => |message| .{ .chat = try message.clone(allocator) },
+            .assistant_tool_calls => |message| .{ .assistant_tool_calls = try message.clone(allocator) },
+            .tool_results => |results| .{ .tool_results = try cloneToolResultMessages(allocator, results) },
+        };
+    }
 
     pub fn deinit(self: *ConversationMessage, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .chat => |*m| m.deinit(allocator),
+            .assistant_tool_calls => |*m| m.deinit(allocator),
             .tool_results => |results| {
                 for (results) |*r| r.deinit(allocator);
-                allocator.free(results);
+                if (results.len != 0) allocator.free(results);
             },
         }
         self.* = undefined;
     }
 };
+
+fn cloneToolCalls(allocator: std.mem.Allocator, calls: []const ToolCall) ![]ToolCall {
+    if (calls.len == 0) return &.{};
+
+    const owned = try allocator.alloc(ToolCall, calls.len);
+    var count: usize = 0;
+    errdefer {
+        for (owned[0..count]) |*call| call.deinit(allocator);
+        allocator.free(owned);
+    }
+
+    for (calls) |call| {
+        owned[count] = try call.clone(allocator);
+        count += 1;
+    }
+
+    return owned;
+}
+
+fn freeToolCalls(allocator: std.mem.Allocator, calls: []ToolCall) void {
+    for (calls) |*call| call.deinit(allocator);
+    if (calls.len != 0) allocator.free(calls);
+}
+
+fn cloneToolResultMessages(
+    allocator: std.mem.Allocator,
+    results: []const ToolResultMessage,
+) ![]ToolResultMessage {
+    if (results.len == 0) return &.{};
+
+    const owned = try allocator.alloc(ToolResultMessage, results.len);
+    var count: usize = 0;
+    errdefer {
+        for (owned[0..count]) |*result| result.deinit(allocator);
+        allocator.free(owned);
+    }
+
+    for (results) |result| {
+        owned[count] = try result.clone(allocator);
+        count += 1;
+    }
+
+    return owned;
+}
 
 /// Vtable handle. Concrete dispatchers expose `dispatcher()` returning this.
 pub const ToolDispatcher = struct {
@@ -514,6 +628,54 @@ test "native format_results keeps tool_call_id" {
     try std.testing.expect(msg == .tool_results);
     try std.testing.expectEqual(@as(usize, 1), msg.tool_results.len);
     try std.testing.expectEqualStrings("tc-1", msg.tool_results[0].tool_call_id);
+}
+
+test "assistant tool-call conversation messages clone and deinit owned fields" {
+    const allocator = std.testing.allocator;
+    const calls = [_]ToolCall{.{
+        .id = "call-1",
+        .name = "shell",
+        .arguments = "{\"command\":\"pwd\"}",
+    }};
+    const message = ConversationMessage{ .assistant_tool_calls = .{
+        .text = "checking",
+        .tool_calls = @constCast(&calls),
+        .reasoning_content = "thinking",
+    } };
+
+    var cloned = try message.clone(allocator);
+    defer cloned.deinit(allocator);
+
+    try std.testing.expect(cloned == .assistant_tool_calls);
+    try std.testing.expectEqualStrings("checking", cloned.assistant_tool_calls.text.?);
+    try std.testing.expectEqual(@as(usize, 1), cloned.assistant_tool_calls.tool_calls.len);
+    try std.testing.expectEqualStrings("call-1", cloned.assistant_tool_calls.tool_calls[0].id);
+    try std.testing.expectEqualStrings("shell", cloned.assistant_tool_calls.tool_calls[0].name);
+    try std.testing.expectEqualStrings(
+        "{\"command\":\"pwd\"}",
+        cloned.assistant_tool_calls.tool_calls[0].arguments,
+    );
+    try std.testing.expectEqualStrings("thinking", cloned.assistant_tool_calls.reasoning_content.?);
+}
+
+fn cloneAssistantToolCallsOomImpl(allocator: std.mem.Allocator) !void {
+    const calls = [_]ToolCall{.{
+        .id = "call-1",
+        .name = "shell",
+        .arguments = "{\"command\":\"pwd\"}",
+    }};
+    const message = ConversationMessage{ .assistant_tool_calls = .{
+        .text = "checking",
+        .tool_calls = @constCast(&calls),
+        .reasoning_content = "thinking",
+    } };
+
+    var cloned = try message.clone(allocator);
+    defer cloned.deinit(allocator);
+}
+
+test "assistant tool-call conversation message clone is OOM safe" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, cloneAssistantToolCallsOomImpl, .{});
 }
 
 test "should_send_tool_specs flags" {

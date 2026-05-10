@@ -155,6 +155,19 @@ pub fn build(b: *std.Build) void {
     linkSqlite(b, eval_multimodal_exe);
     b.installArtifact(eval_multimodal_exe);
 
+    const eval_provider_types_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_provider_types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_provider_types_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_provider_types_exe = b.addExecutable(.{
+        .name = "eval-provider-types",
+        .root_module = eval_provider_types_mod,
+    });
+    linkSqlite(b, eval_provider_types_exe);
+    b.installArtifact(eval_provider_types_exe);
+
     // ─── Test step ───────────────────────────────────────────────────────
     const lib_unit_tests = b.addTest(.{ .root_module = zeroclaw_mod });
     linkSqlite(b, lib_unit_tests);

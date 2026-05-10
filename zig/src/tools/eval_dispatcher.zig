@@ -192,6 +192,24 @@ fn writeConversationMessage(writer: anytype, msg: dispatcher.ConversationMessage
             try std.json.stringify(chat.content, .{}, writer);
             try writer.writeAll("}}");
         },
+        .assistant_tool_calls => |message| {
+            try writer.writeAll("{\"type\":\"AssistantToolCalls\",\"data\":{\"text\":");
+            if (message.text) |text| try std.json.stringify(text, .{}, writer) else try writer.writeAll("null");
+            try writer.writeAll(",\"tool_calls\":[");
+            for (message.tool_calls, 0..) |call, i| {
+                if (i > 0) try writer.writeByte(',');
+                try writer.writeAll("{\"id\":");
+                try std.json.stringify(call.id, .{}, writer);
+                try writer.writeAll(",\"name\":");
+                try std.json.stringify(call.name, .{}, writer);
+                try writer.writeAll(",\"arguments\":");
+                try std.json.stringify(call.arguments, .{}, writer);
+                try writer.writeAll("}");
+            }
+            try writer.writeAll("],\"reasoning_content\":");
+            if (message.reasoning_content) |reasoning| try std.json.stringify(reasoning, .{}, writer) else try writer.writeAll("null");
+            try writer.writeAll("}}");
+        },
         .tool_results => |results| {
             try writer.writeAll("{\"type\":\"ToolResults\",\"data\":[");
             for (results, 0..) |r, i| {

@@ -1496,3 +1496,47 @@ Recorded here so a future review doesn't re-investigate the same areas:
 ### Should-fix queued for a future Phase 3-D.3 (or won't-fix)
 
 - **`collapseWrappedMarker` Unicode whitespace gap** (`zig/src/providers/multimodal.zig:243-246`) — Zig skips only `' ' \t \n \r` after a newline; Rust's `char::is_whitespace()` also covers NBSP (U+00A0), thin space, etc. Narrow practical impact (only matters for terminal-paste-corrupted markers with Unicode whitespace continuations). No fixture exercises it; deferred until a real reproducer surfaces.
+
+## 2026-05-10 — Phase 3-F: zeroclaw-api/provider.rs missing types port (Codex first-pass)
+
+Filled in the remaining provider DTO surface from `rust/crates/zeroclaw-api/src/provider.rs` without migrating concrete provider implementations. The Zig provider handle remains sync-only; this commit adds the shared types and eval parity coverage needed before Phase 3-G+ can move Ollama/OpenAI off their current ad-hoc wire DTOs.
+
+### Source changes
+
+- `zig/src/providers/provider.zig`
+  - Re-exports the existing dispatcher-owned `ToolCall`, `TokenUsage`, `ChatResponse`, `ToolResultMessage`, and `ConversationMessage` shapes instead of duplicating them.
+  - Adds `StreamChunk`, `StreamEvent`, `StreamOptions`, `StreamError`, `ProviderCapabilityError`, `ToolsPayload`, and `buildToolInstructionsText`.
+  - Grows `Capabilities` with Rust-parity `native_tool_calling`, `vision`, and `prompt_caching` fields, while keeping the existing vtable-default fields and adding `ProviderCapabilities = Capabilities`.
+  - `buildToolInstructionsText` writes compact sorted-key JSON for schemas to match Rust `serde_json` / BTreeMap output.
+- `zig/src/runtime/agent/dispatcher.zig`
+  - Adds the `assistant_tool_calls` `ConversationMessage` variant with `text`, `tool_calls`, and `reasoning_content`.
+  - Adds clone/deinit coverage for the new variant and OOM regression coverage via `std.testing.checkAllAllocationFailures`.
+- `zig/src/providers/openai/client.zig` and `zig/src/providers/ollama/client.zig`
+  - Populate the new Rust-named capability fields alongside the older `supports_*` fields so direct capability inspection stays coherent.
+- `zig/src/tools/eval_provider_types.zig` and `eval-tools/src/bin/eval-provider-types.rs`
+  - Add the `provider_types` eval runner pair for prompt-guided formatter parity plus DTO JSON shape checks.
+- `evals/fixtures/provider_types/`
+  - Adds 5 fixtures: empty tool instructions, two-tool sorted schema instructions, tool-call/chat-response shape, conversation-message shape, and stream/tools-payload shape.
+
+### Pinned question answers
+
+1. **Capabilities naming direction** — kept `Capabilities` as the existing Zig vtable type and added `pub const ProviderCapabilities = Capabilities`. This avoids churn in current providers while exposing the Rust name for future ports.
+2. **ChatResponse migration** — added the provider-neutral type surface now via the dispatcher alias; concrete providers still return their current native/wire DTOs internally and only convert at existing boundaries. Full migration remains Phase 3-G+.
+3. **ToolCall shape** — dispatcher already had the Rust shape (`id`, `name`, `arguments`), so provider.zig re-exports it instead of creating a duplicate owned-slice type.
+4. **StreamError shape** — used the recommended Zig error-set form: `error{ Http, Json, InvalidSse, Provider, Io }`. No payload-bearing streaming errors until a real streaming consumer exists.
+5. **buildToolInstructionsText parity** — verified byte-for-byte through the new eval fixtures, including sorted nested schema keys. The full eval driver is green.
+
+### Deferred
+
+- No Ollama/OpenAI provider behavior migration; they keep their native request/response DTOs for now.
+- No streaming vtable method or streaming provider implementation.
+- No async trait machinery; the Zig vtable remains sync-only.
+- No `StreamResult<T>` alias; Zig callers should use `StreamError!T` directly.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `106/106` tests passed.
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-api --release` — `29` unit tests + `1` doctest passed.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all fixtures OK, `158` total fixture inputs (`153 + 5 provider_types`).
