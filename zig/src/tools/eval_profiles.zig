@@ -279,24 +279,34 @@ fn fillMetadata(allocator: std.mem.Allocator, map: *std.StringHashMap([]u8), val
 }
 
 fn putProfile(allocator: std.mem.Allocator, map: *std.StringHashMap(auth.AuthProfile), profile: *const auth.AuthProfile) !void {
+    try map.ensureUnusedCapacity(1);
     const clone = try profile.clone(allocator);
     errdefer {
         var tmp = clone;
         tmp.deinit(allocator);
     }
-    const gop = try map.getOrPut(profile.id);
-    if (!gop.found_existing) gop.key_ptr.* = try allocator.dupe(u8, profile.id);
+    const gop = map.getOrPutAssumeCapacity(profile.id);
+    if (!gop.found_existing) {
+        gop.key_ptr.* = allocator.dupe(u8, profile.id) catch |err| {
+            map.removeByPtr(gop.key_ptr);
+            return err;
+        };
+    }
     gop.value_ptr.* = clone;
 }
 
 fn putStringValue(allocator: std.mem.Allocator, map: *std.StringHashMap([]u8), key: []const u8, value: []const u8) !void {
+    try map.ensureUnusedCapacity(1);
     const value_owned = try allocator.dupe(u8, value);
     errdefer allocator.free(value_owned);
-    const gop = try map.getOrPut(key);
+    const gop = map.getOrPutAssumeCapacity(key);
     if (gop.found_existing) {
         allocator.free(gop.value_ptr.*);
     } else {
-        gop.key_ptr.* = try allocator.dupe(u8, key);
+        gop.key_ptr.* = allocator.dupe(u8, key) catch |err| {
+            map.removeByPtr(gop.key_ptr);
+            return err;
+        };
     }
     gop.value_ptr.* = value_owned;
 }

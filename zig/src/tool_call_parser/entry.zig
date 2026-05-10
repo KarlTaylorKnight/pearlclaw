@@ -599,42 +599,38 @@ fn joinTextParts(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 
 }
 
 fn removeMinimaxToolcallBlock(allocator: std.mem.Allocator, input_owned: []u8) ![]u8 {
-    const open = "<minimax:toolcall>";
-    const close = "</minimax:toolcall>";
-    var current = input_owned;
-    while (std.mem.indexOf(u8, current, open)) |start| {
-        const after_open = current[start + open.len ..];
-        const close_rel = std.mem.indexOf(u8, after_open, close) orelse break;
-        const end_pos = start + open.len + close_rel + close.len;
-        var out = std.ArrayList(u8).init(allocator);
-        errdefer out.deinit();
-        try out.appendSlice(current[0..start]);
-        try out.appendSlice(current[end_pos..]);
-        allocator.free(current);
-        current = try out.toOwnedSlice();
-    }
-    return current;
+    return removeToolCallBlocksRusty(allocator, input_owned, "<minimax:toolcall>", "</minimax:toolcall>");
 }
 
+// Consumes input_owned on success (frees it) and returns a new owned buffer
+// with all `start_marker..end_marker` pairs removed. On error, input_owned is
+// left untouched so the caller's defer/errdefer can free it. Single-pass over
+// input — never mutates input_owned and never frees it until success is
+// guaranteed; the previous iterative free-then-realloc pattern lost the
+// caller's input on any post-iteration-1 OOM.
 fn removeToolCallBlocksRusty(
     allocator: std.mem.Allocator,
     input_owned: []u8,
     start_marker: []const u8,
     end_marker: []const u8,
 ) ![]u8 {
-    var current = input_owned;
-    while (std.mem.indexOf(u8, current, start_marker)) |start| {
-        const after_start = current[start + start_marker.len ..];
+    var out = std.ArrayList(u8).init(allocator);
+    errdefer out.deinit();
+
+    var cursor: usize = 0;
+    while (std.mem.indexOf(u8, input_owned[cursor..], start_marker)) |rel_start| {
+        const start = cursor + rel_start;
+        const after_start = input_owned[start + start_marker.len ..];
         const end_rel = std.mem.indexOf(u8, after_start, end_marker) orelse break;
         const end_pos = start + start_marker.len + end_rel + end_marker.len;
-        var out = std.ArrayList(u8).init(allocator);
-        errdefer out.deinit();
-        try out.appendSlice(current[0..start]);
-        try out.appendSlice(current[end_pos..]);
-        allocator.free(current);
-        current = try out.toOwnedSlice();
+        try out.appendSlice(input_owned[cursor..start]);
+        cursor = end_pos;
     }
-    return current;
+    try out.appendSlice(input_owned[cursor..]);
+
+    const new_buffer = try out.toOwnedSlice();
+    allocator.free(input_owned);
+    return new_buffer;
 }
 
 fn replaceAllOwned(
@@ -670,4 +666,30 @@ test "smoke" {
     var result = try parseToolCalls(std.testing.allocator, "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>", null);
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), result.calls.len);
+}
+
+fn removeToolCallBlocksRustyOomImpl(allocator: std.mem.Allocator) !void {
+    // Multi-pair input forces the helper through both a removal-block branch
+    // and a final-tail append, exercising every appendSlice + toOwnedSlice
+    // alloc. Caller mirrors the production pattern: dupe the input, then
+    // either the helper consumes it (success) or leaves it untouched (error).
+    const input = try allocator.dupe(u8, "head<TC>aaa</TC>middle<TC>bbb</TC>tail");
+    var input_consumed = false;
+    errdefer if (!input_consumed) allocator.free(input);
+
+    const cleaned = try removeToolCallBlocksRusty(allocator, input, "<TC>", "</TC>");
+    input_consumed = true;
+    defer allocator.free(cleaned);
+
+    try std.testing.expectEqualStrings("headmiddletail", cleaned);
+}
+
+test "removeToolCallBlocksRusty is OOM-safe (regression for free-then-realloc fix)" {
+    // Previous iterative-replace pattern freed `current` before the new
+    // toOwnedSlice succeeded; a post-iteration-1 OOM left the helper
+    // returning to a caller whose input was already freed, then the
+    // caller's defer double-freed it. Regression sweep verifies that
+    // for every fail_index, either the helper succeeds cleanly or the
+    // caller's input is left intact for its own defer to free.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, removeToolCallBlocksRustyOomImpl, .{});
 }

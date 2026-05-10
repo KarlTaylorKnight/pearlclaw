@@ -1021,3 +1021,59 @@ Notes for future review:
 - The OOM regression tests use `std.testing.checkAllAllocationFailures` (Zig 0.14.1 stdlib helper) rather than a hand-rolled `fail_index` loop. The helper does the right thing automatically: pre-flights the test_fn once with unlimited memory to count allocations, then sweeps `fail_index` from 0 to that count, detecting `SwallowedOutOfMemoryError` (function returned success after OOM induced), `NondeterministicMemoryUsage` (allocation count differs across runs), and `MemoryLeakDetected` (`allocated_bytes != freed_bytes` after OOM). The `test_fn` signature must take `Allocator` as its first arg.
 - The bonus fixes (e) and (f) point at a broader review item: any other `getOrPut` + later-alloc-of-key pattern, or any free-then-realloc pattern, is latently broken under OOM. Recommend a follow-up pass over `secrets.zig`, `service.zig`, and the rest of `profiles.zig` (and the wider `zeroclaw-config` / `zeroclaw-providers` Zig code as it lands) to look for both. The fix templates from this commit (ensureUnusedCapacity + getOrPutAssumeCapacity + removeByPtr; alloc-then-free) are reusable.
 - All four review-flagged style nits from the preceding e557aef section remain queued (non-blocking); this commit intentionally stays scoped to the four latent bugs plus the two bonus bugs the regression tests forced into scope.
+
+## 2026-05-10 — OOM-pattern audit (Claude direct)
+
+Follow-up to Phase 4-A.1's closing recommendation. Sweeps the rest of the Zig codebase for the two latent-bug patterns that surfaced when the FailingAllocator regression tests landed in `502f3e6`:
+
+1. **getOrPut + later-key-alloc:** `std.HashMap.getOrPut` auto-sets `gop.key_ptr.*` to the borrowed `key` parameter (`std/hash_map.zig:1098-1104`). If the next line allocates an owned dupe and that allocation OOMs, the entry is left in the map pointing at borrowed memory; a later `data.deinit` then `allocator.free`s borrowed bytes — bad-free / double-free, depending on whether the address is still live elsewhere.
+2. **free-then-realloc:** `allocator.free(field)` followed by `field = try allocator.dupe(...)` leaves `field` dangling on OOM; a later `errdefer self.deinit(allocator)` then double-frees.
+
+Audit method: `grep` for `getOrPut(` in `--include="*.zig" src/`, then a Python regex sweep `r"allocator\.free\(([^)]+)\)\s*;\s*\n\s*\1\s*=\s*try "` for the second pattern. Each match hand-classified — only those that could actually be triggered by an OOM (not zero-byte dupes, not write-once-from-default fields) made the fix list.
+
+### Findings
+
+Pattern 1 — four call sites, all isomorphic to the `profiles.zig` fixes from `502f3e6`:
+
+- `zig/src/providers/auth/service.zig:307-317 putStringValue` — production helper called by `AuthService.storeProviderToken` to populate Token-kind profile metadata.
+- `zig/src/providers/auth/service.zig:394-409 putProfileForTest` — file-private test helper; same fix template.
+- `zig/src/tools/eval_profiles.zig:281-290 putProfile` — eval runner helper.
+- `zig/src/tools/eval_profiles.zig:292-302 putStringValue` — eval runner helper.
+
+Pattern 2 — six grep hits, three real bugs in two helpers:
+
+- `zig/src/tool_call_parser/entry.zig:601-617 removeMinimaxToolcallBlock` — iterative free-then-realloc loop. Bug.
+- `zig/src/tool_call_parser/entry.zig:619-638 removeToolCallBlocksRusty` — same iterative pattern. Bug.
+- `zig/src/tool_call_parser/entry.zig:182-186 / 198-202 / 214-218` — three caller sites that pass an owned dupe to one of the two helpers above. Caller code is correct *if* the helper's error contract is correct; the bug was in the helper, not the caller. Caller code unchanged.
+- `zig/src/providers/auth/profiles.zig:255 removeProfile` — `self.allocator.free(entry.value_ptr.*)` followed by `entry.value_ptr.* = try self.allocator.dupe(u8, "")`. Technically not a bug because `dupe(u8, "")` is special-cased to never fail (`std/mem/Allocator.zig:267 if (byte_count == 0) return ...`), so left as-is. Pattern is fragile, but this is the only zero-byte case in the codebase.
+
+### Fixes
+
+Pattern 1 (4 sites in service.zig + eval_profiles.zig): same template as `502f3e6`'s fix (e). Replaces the `getOrPut + try allocator.dupe(key)` pair with `try map.ensureUnusedCapacity(1)` → `getOrPutAssumeCapacity` → `allocator.dupe(u8, key) catch |err| { map.removeByPtr(gop.key_ptr); return err; }`.
+
+Pattern 2 (2 helpers in entry.zig): algorithmic restructure rather than a pure ownership fix. The previous iterative `allocator.free(current); current = try out.toOwnedSlice();` pattern lost the caller's input buffer on any post-iteration-1 OOM (the input was freed before the new buffer was secured; helper would then return error, caller's defer would double-free the now-dangling `cleaned_text`). New pattern: single-pass scan over `input_owned`, accumulate kept segments into one `out: std.ArrayList(u8)`, take ownership at the end, free `input_owned` only after `out.toOwnedSlice()` succeeds. `removeMinimaxToolcallBlock` collapses to a thin wrapper around `removeToolCallBlocksRusty` since they were structurally identical.
+
+Caller code in entry.zig (lines 182-186, 198-202, 214-218) was already correct under the new helper contract — the existing `defer allocator.free(cleaned_text)` works whether the helper consumed the input (success) or left it untouched (error). No caller changes.
+
+### Regression tests
+
+Three new tests, all using `std.testing.checkAllAllocationFailures`:
+
+- `zig/src/providers/auth/service.zig` — `test "service.putStringValue is OOM-safe (regression for OOM-pattern audit)"`. Builds a fresh `StringHashMap([]u8)` inside the sweep, exercises both the `put-new` (key dupe) and `put-existing` (value replace) branches, and lets `std.testing.allocator`'s leak detector + the helper's `MemoryLeakDetected` check confirm no leaks across every fail_index.
+- `zig/src/providers/auth/service.zig` — `test "service.putProfileForTest is OOM-safe (regression for OOM-pattern audit)"`. Same shape for `StringHashMap(AuthProfile)`. Covers the test-helper branch of fix template 1.
+- `zig/src/tool_call_parser/entry.zig` — `test "removeToolCallBlocksRusty is OOM-safe (regression for free-then-realloc fix)"`. Multi-pair input ("head\<TC\>aaa\</TC\>middle\<TC\>bbb\</TC\>tail") forces both removal-block branches and the final-tail append. Mirrors the production caller pattern with a `input_consumed` flag so the test setup itself stays leak-safe across the sweep — if the helper consumes input on success, `input_consumed = true` cancels the errdefer; if the helper errors, errdefer frees the input.
+
+`removeMinimaxToolcallBlock` shares all logic with `removeToolCallBlocksRusty` after the wrapper collapse, so the one regression test covers both helpers transitively.
+
+### Verification
+
+- `cd zig && zig build test --summary all` — `87/87 tests passed` (was 84/84; +3 regression tests, no test removed).
+- `cd zig && zig build` — clean.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 142 fixtures OK; counts unchanged. The audit fixes are pure error-path correctness improvements; no behavioral change on success paths.
+
+### Notes
+
+- `removeProfile`'s zero-byte sentinel pattern (`profiles.zig:255`) is technically safe but should migrate to a non-sentinel approach (e.g., collect IDs to remove, then a second pass to actually remove) when this file is next touched. Tracked in the e557aef-section style nits queue.
+- `tool_call_parser/types.zig:215 parseObject` uses `getOrPut` correctly: it never overrides the auto-set `gop.key_ptr.*` and uses an `key_owned` flag to manage transfer-of-ownership. Verified safe; no fix needed.
+- `removeProfile` and any future code that needs the "consume on entry, return new owned, untouched-on-error" contract should follow the new `removeToolCallBlocksRusty` pattern: build the new buffer to completion in a fresh `ArrayList`, take ownership, free the input last. Avoids the trap of mid-iteration ownership state.
+- The two patterns this audit chased are now broadly fixed in the Zig codebase as it stands at `502f3e6`+. Future Zig code (especially Codex first-passes) should be reviewed against these two templates before landing.

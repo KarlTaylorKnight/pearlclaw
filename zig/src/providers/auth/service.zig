@@ -305,13 +305,17 @@ fn sleepMillis(ms: u64) void {
 }
 
 fn putStringValue(allocator: std.mem.Allocator, map: *std.StringHashMap([]u8), key: []const u8, value: []const u8) !void {
+    try map.ensureUnusedCapacity(1);
     const value_owned = try allocator.dupe(u8, value);
     errdefer allocator.free(value_owned);
-    const gop = try map.getOrPut(key);
+    const gop = map.getOrPutAssumeCapacity(key);
     if (gop.found_existing) {
         allocator.free(gop.value_ptr.*);
     } else {
-        gop.key_ptr.* = try allocator.dupe(u8, key);
+        gop.key_ptr.* = allocator.dupe(u8, key) catch |err| {
+            map.removeByPtr(gop.key_ptr);
+            return err;
+        };
     }
     gop.value_ptr.* = value_owned;
 }
@@ -388,12 +392,65 @@ test "selectProfileId falls back to sorted provider match" {
 }
 
 fn putProfileForTest(allocator: std.mem.Allocator, map: *std.StringHashMap(AuthProfile), profile: *const AuthProfile) !void {
+    try map.ensureUnusedCapacity(1);
     const clone = try profile.clone(allocator);
     errdefer {
         var tmp = clone;
         tmp.deinit(allocator);
     }
-    const gop = try map.getOrPut(profile.id);
-    if (!gop.found_existing) gop.key_ptr.* = try allocator.dupe(u8, profile.id);
+    const gop = map.getOrPutAssumeCapacity(profile.id);
+    if (!gop.found_existing) {
+        gop.key_ptr.* = allocator.dupe(u8, profile.id) catch |err| {
+            map.removeByPtr(gop.key_ptr);
+            return err;
+        };
+    }
     gop.value_ptr.* = clone;
+}
+
+fn putStringValueOomImpl(allocator: std.mem.Allocator) !void {
+    var map = std.StringHashMap([]u8).init(allocator);
+    defer {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        map.deinit();
+    }
+
+    // Cover both put-new (key dupe) and put-existing (value replace) branches.
+    try putStringValue(allocator, &map, "key1", "value1");
+    try putStringValue(allocator, &map, "key2", "value2");
+    try putStringValue(allocator, &map, "key1", "value1-updated");
+}
+
+test "service.putStringValue is OOM-safe (regression for OOM-pattern audit)" {
+    // Regression for the audit's getOrPut + later-key-alloc pattern:
+    // std.HashMap.getOrPut auto-sets gop.key_ptr.* to the borrowed key, so
+    // a failed allocator.dupe(key) afterward left an entry pointing at
+    // borrowed memory; a later deinit would free borrowed bytes. Now uses
+    // ensureUnusedCapacity + getOrPutAssumeCapacity + removeByPtr rollback.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, putStringValueOomImpl, .{});
+}
+
+fn putProfileForTestOomImpl(allocator: std.mem.Allocator) !void {
+    var map = std.StringHashMap(AuthProfile).init(allocator);
+    defer {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(allocator);
+        }
+        map.deinit();
+    }
+
+    var profile = try AuthProfile.newToken(allocator, OPENAI_CODEX_PROVIDER, "default", "secret", 1_700_000_000);
+    defer profile.deinit(allocator);
+
+    try putProfileForTest(allocator, &map, &profile);
+}
+
+test "service.putProfileForTest is OOM-safe (regression for OOM-pattern audit)" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, putProfileForTestOomImpl, .{});
 }
