@@ -1077,3 +1077,66 @@ Three new tests, all using `std.testing.checkAllAllocationFailures`:
 - `tool_call_parser/types.zig:215 parseObject` uses `getOrPut` correctly: it never overrides the auto-set `gop.key_ptr.*` and uses an `key_owned` flag to manage transfer-of-ownership. Verified safe; no fix needed.
 - `removeProfile` and any future code that needs the "consume on entry, return new owned, untouched-on-error" contract should follow the new `removeToolCallBlocksRusty` pattern: build the new buffer to completion in a fresh `ArrayList`, take ownership, free the input last. Avoids the trap of mid-iteration ownership state.
 - The two patterns this audit chased are now broadly fixed in the Zig codebase as it stands at `502f3e6`+. Future Zig code (especially Codex first-passes) should be reviewed against these two templates before landing.
+
+## 2026-05-10 — Multimodal port plan (Claude direct)
+
+Brief for the Codex first-pass that closes the Phase 2A Ollama TODO at `zig/src/providers/ollama/client.zig:534-543 convertUserMessageContent`. Scouting performed in parallel with Phase 5 (Claude-direct, separate file).
+
+### Rust source
+
+- `rust/crates/zeroclaw-providers/src/multimodal.rs` (935 LOC) — full multimodal surface.
+- Public API surface (verified via `grep`):
+  - `pub struct PreparedMessages { messages: Vec<ChatMessage>, contains_images: bool }`
+  - `pub enum MultimodalError` — 8 variants: `TooManyImages`, `ImageTooLarge`, `UnsupportedMime`, `RemoteFetchDisabled`, `ImageSourceNotFound`, `InvalidMarker`, `RemoteFetchFailed`, `LocalReadFailed`.
+  - `pub fn parse_image_markers(content: &str) -> (String, Vec<String>)` (`multimodal.rs:95-131`) — single-pass marker scanner; recognizes `[IMAGE:...]` prefix, finds the closing `]`, classifies the payload via `is_loadable_image_reference` (file path / http(s) URL / `data:` URI), preserves placeholder-style markers as literal text.
+  - `pub fn count_image_markers` / `pub fn contains_image_markers` (`multimodal.rs:133-143`) — convenience wrappers over `parse_image_markers` summed across user messages.
+  - `pub fn extract_ollama_image_payload(image_ref: &str) -> Option<String>` (`multimodal.rs:145-160` plus the rest) — handles `data:...,<payload>` extraction. Returns the base64 payload portion for Ollama's `images` field.
+  - `pub async fn prepare_messages_for_provider(...)` (`multimodal.rs:160+`) — the orchestrator that does HTTP fetch (reqwest::Client), file I/O, base64 normalization, MIME detection, and image-count enforcement. This is where the bulk of the LOC lives.
+
+- Internal helpers (lots of them — see grep output): `is_loadable_image_reference`, `collapse_wrapped_marker`, `trim_old_images`, `compose_multimodal_message`, `normalize_data_uri`, `validate_size`, `validate_mime`, `detect_mime`, `normalize_content_type`, `mime_from_extension`, `mime_from_magic`. The MIME-by-magic table is small (PNG/JPEG/WebP/GIF/BMP signatures).
+
+### Consumers in the Rust codebase
+
+- `rust/crates/zeroclaw-providers/src/ollama.rs:1` — `use crate::multimodal;`
+- `rust/crates/zeroclaw-providers/src/ollama.rs:323` — `let (cleaned, image_refs) = multimodal::parse_image_markers(content);`
+- `rust/crates/zeroclaw-providers/src/ollama.rs:330` — `multimodal::extract_ollama_image_payload(reference)`
+
+Ollama only uses the two simple text-side functions (`parse_image_markers` + `extract_ollama_image_payload`). The orchestrator (`prepare_messages_for_provider`) is consumed by OpenAI and other providers that need full HTTP fetch + normalization. For closing the Ollama TODO specifically, the simple pair is sufficient.
+
+### Phase 3-D scope (the proposed Codex chunk)
+
+In:
+
+- New `zig/src/providers/multimodal.zig` — port the Rust file's public API. Sync-only (the pilot is sync everywhere; the `prepare_messages_for_provider` orchestrator's HTTP fetch can use `std.http.Client` directly, mirroring the OAuth Phase 2 + Ollama `chat` HTTP patterns already in the codebase). Unicode/text scanning is straightforward Zig stdlib.
+- Modify `zig/src/providers/ollama/client.zig:534-543 convertUserMessageContent` — replace the TODO stub with a call to the new `multimodal.parse_image_markers` + `multimodal.extract_ollama_image_payload` pair. Returns the cleaned text + an `images` slice of base64 payloads. The current `ConvertedUserMessageContent.images: ?[][]u8` field already exists and is wired through; this is just removing the `null` and populating it.
+- New `zig/src/tools/eval_multimodal.zig` + `eval-tools/src/bin/eval-multimodal.rs` — eval runner pair, mirrors the existing `eval_secrets`/`eval_profiles` shape.
+- Eval fixtures under `evals/fixtures/multimodal/` — at minimum: `parse_image_markers_basic`, `parse_image_markers_preserves_placeholders`, `parse_image_markers_handles_wrapped_marker`, `extract_ollama_payload_data_uri`, `extract_ollama_payload_passthrough`. 5-7 scenarios; if the orchestrator ports cleanly, also `prepare_messages_truncates_old_images`, `prepare_messages_rejects_large_image`, `prepare_messages_rejects_unsupported_mime`. Avoid live-network fixtures (use file paths + data URIs only — same boundary as the OpenAI eval fixtures around HTTP).
+- Modify `evals/driver/run_evals.py` — register the `multimodal` subsystem.
+- Modify Ollama's `scenario-chat-request-with-tools` and any other Ollama fixture whose user message content would now go through marker extraction (probably zero — most fixtures don't include `[IMAGE:...]` markers, so the cleaned-text path is a passthrough). Verify each fixture before/after.
+
+Out (deferred):
+
+- Live network image fetch in evals (the Rust eval bin should use the same boundary).
+- Provider-side `image_url` multimodal handling for OpenAI — the orchestrator can be ported but wiring it into OpenAI's `convertMessages` is a separate Phase 3-E follow-up. Phase 3-D's wire-up only opens Ollama.
+- `MULTIMODAL_DEFAULT_MAX_IMAGES` / `MULTIMODAL_DEFAULT_MAX_BYTES` — pull from `zeroclaw_config::schema::MultimodalConfig` in Rust; substitute with hardcoded constants in the Zig port (matching the `AuthConfig` substitute pattern from Phase 4-A) until Phase 4-B lands the full Config schema.
+
+### Eval contract
+
+- `parse_image_markers` is deterministic on bytes — exact-string compare for `cleaned`, exact-list compare for `refs`.
+- `extract_ollama_image_payload` is deterministic on bytes — exact compare on `Option<String>`.
+- `prepare_messages_for_provider` is non-deterministic on byte order if HTTP is involved (random connection ordering). Use only file-path + data-URI inputs in fixtures; assert on the resulting `PreparedMessages` content with a normalized JSON dump.
+- Errors return canonical eval error tags (consistent with secrets/profiles convention): `multimodal_too_many_images`, `multimodal_image_too_large`, `multimodal_unsupported_mime`, etc. The Rust `MultimodalError` Display strings can stay free-form; the eval canonicalizes by tag.
+
+### Workforce + format
+
+Codex first-pass candidate (~600-1000 LOC Zig with HTTP + base64 + file I/O + tests + 5-7 fixtures + Rust eval bin), comparable scope to OpenAI Phase 2 (commit `9a3c87f`) and Phase 4-A (commit `e557aef`). Brief Codex with: this section as the primary scope doc, the file `multimodal.rs` to port verbatim modulo the substitutions above, and the established convention that the brief's "## YYYY-MM-DD —" section header lands at the literal end of `docs/porting-notes.md` after the first-pass commit (the anchor-misorder streak from the e557aef section's review notes).
+
+### Pinned questions for review
+
+- Base64 encode/decode: Zig 0.14.1 has `std.base64.standard.Encoder` / `Decoder` — verify the encoding alphabet matches Rust's `base64::engine::general_purpose::STANDARD` (it does — both are RFC 4648 standard).
+- `std.http.Client` request shape for image fetch: GET, follow redirects, content-type/content-length headers. Mirror the OpenAI Phase 2 OAuth HTTP pattern at `zig/src/providers/auth/openai_oauth.zig`.
+- File reading with size cap: `std.fs.File.readAll` after stat-checked size? Or `readAlloc(allocator, max_bytes)`? Pick the simplest cross-platform.
+- MIME-by-magic: hardcode the 5 image format signatures from `multimodal.rs:515 mime_from_magic` exactly. PNG = `\x89PNG\r\n\x1a\n`, JPEG = `\xff\xd8\xff`, WebP = `RIFF...WEBP`, GIF = `GIF8[79]a`, BMP = `BM`.
+- `MultimodalConfig` field reads — pick whichever shape feels less invasive: hardcoded constants (matches AuthConfig pattern), or a tiny `MultimodalConfig` substitute struct passed at API boundary.
+
+No source changes this commit — plan only.
