@@ -1,0 +1,1 @@
+{"op":"prepare_messages_for_provider","result":{"contains_images":true,"messages":[{"content":"Old","role":"user"},{"content":"ack","role":"assistant"},{"content":"Mid\n\n[IMAGE:data:image/png;base64,iVBORw0KGgo=]","role":"user"},{"content":"New\n\n[IMAGE:data:image/png;base64,iVBORw0KGgo=]","role":"user"}]}}

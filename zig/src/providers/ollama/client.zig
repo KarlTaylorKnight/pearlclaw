@@ -3,6 +3,7 @@ const types = @import("types.zig");
 const parser_types = @import("../../tool_call_parser/types.zig");
 const parser_json = @import("../../tool_call_parser/json.zig");
 const dispatcher = @import("../../runtime/agent/dispatcher.zig");
+const multimodal = @import("../multimodal.zig");
 
 pub const BASE_URL = "http://localhost:11434";
 pub const TEMPERATURE_DEFAULT: f64 = 0.8;
@@ -535,10 +536,59 @@ fn convertUserMessageContent(
     allocator: std.mem.Allocator,
     content: []const u8,
 ) !ConvertedUserMessageContent {
-    // TODO(Phase 3: multimodal image extraction): parse image markers into Ollama images.
+    var parsed = try multimodal.parseImageMarkers(allocator, content);
+    defer parsed.deinit(allocator);
+    if (parsed.refs.len == 0) {
+        return .{
+            .content = try allocator.dupe(u8, content),
+            .images = null,
+        };
+    }
+
+    const images = blk: {
+        const values = try allocator.alloc([]u8, parsed.refs.len);
+        var count: usize = 0;
+        errdefer {
+            for (values[0..count]) |image| allocator.free(image);
+            allocator.free(values);
+        }
+
+        for (parsed.refs) |reference| {
+            if (try multimodal.extractOllamaImagePayload(allocator, reference)) |payload| {
+                values[count] = payload;
+                count += 1;
+            }
+        }
+
+        if (count == 0) {
+            allocator.free(values);
+            return .{
+                .content = try allocator.dupe(u8, content),
+                .images = null,
+            };
+        }
+
+        if (count == values.len) break :blk values;
+
+        const owned = try allocator.alloc([]u8, count);
+        @memcpy(owned, values[0..count]);
+        allocator.free(values);
+        break :blk owned;
+    };
+    errdefer {
+        for (images) |image| allocator.free(image);
+        allocator.free(images);
+    }
+
+    const cleaned = if (std.mem.trim(u8, parsed.cleaned, " \t\r\n").len == 0)
+        null
+    else
+        try allocator.dupe(u8, parsed.cleaned);
+    errdefer if (cleaned) |value| allocator.free(value);
+
     return .{
-        .content = try allocator.dupe(u8, content),
-        .images = null,
+        .content = cleaned,
+        .images = images,
     };
 }
 
@@ -1473,6 +1523,33 @@ test "convertMessages extracts assistant tool calls" {
         "pwd",
         converted[0].tool_calls.?[0].function.arguments.object.get("command").?.string,
     );
+}
+
+test "convertMessages extracts user multimodal images" {
+    var provider = try OllamaProvider.new(std.testing.allocator, null, null);
+    defer provider.deinit(std.testing.allocator);
+
+    const history = [_]dispatcher.ChatMessage{
+        .{
+            .role = "user",
+            .content = "Look here [IMAGE:data:image/png;base64,abcd==]",
+        },
+        .{
+            .role = "user",
+            .content = "[IMAGE:data:image/png;base64,efgh==]",
+        },
+    };
+
+    const converted = try provider.convertMessages(std.testing.allocator, &history);
+    defer freeMessages(std.testing.allocator, converted);
+
+    try std.testing.expectEqual(@as(usize, 2), converted.len);
+    try std.testing.expectEqualStrings("Look here", converted[0].content.?);
+    try std.testing.expectEqual(@as(usize, 1), converted[0].images.?.len);
+    try std.testing.expectEqualStrings("abcd==", converted[0].images.?[0]);
+    try std.testing.expect(converted[1].content == null);
+    try std.testing.expectEqual(@as(usize, 1), converted[1].images.?.len);
+    try std.testing.expectEqualStrings("efgh==", converted[1].images.?[0]);
 }
 
 test "convertMessages resolves tool role name by assistant id" {

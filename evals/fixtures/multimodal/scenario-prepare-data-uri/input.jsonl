@@ -1,0 +1,1 @@
+{"op":"prepare_messages_for_provider","messages":[{"role":"user","content":"Please inspect [IMAGE:data:image/png;base64,iVBORw0KGgo=]"}],"config":{"max_images":4,"max_image_size_mb":5,"allow_remote_fetch":false}}

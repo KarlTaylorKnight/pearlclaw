@@ -36,6 +36,10 @@ path = "src/bin/eval-secrets.rs"
 name = "eval-profiles"
 path = "src/bin/eval-profiles.rs"
 
+[[bin]]
+name = "eval-multimodal"
+path = "src/bin/eval-multimodal.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
 zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }

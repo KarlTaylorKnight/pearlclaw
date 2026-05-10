@@ -142,6 +142,19 @@ pub fn build(b: *std.Build) void {
     linkSqlite(b, eval_profiles_exe);
     b.installArtifact(eval_profiles_exe);
 
+    const eval_multimodal_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_multimodal.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_multimodal_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_multimodal_exe = b.addExecutable(.{
+        .name = "eval-multimodal",
+        .root_module = eval_multimodal_mod,
+    });
+    linkSqlite(b, eval_multimodal_exe);
+    b.installArtifact(eval_multimodal_exe);
+
     // ─── Test step ───────────────────────────────────────────────────────
     const lib_unit_tests = b.addTest(.{ .root_module = zeroclaw_mod });
     linkSqlite(b, lib_unit_tests);

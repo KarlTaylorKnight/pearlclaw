@@ -91,6 +91,15 @@ SUBSYSTEMS = {
         "normalize_timestamps": True,
         "strip_tmp_ids": True,
     },
+    "multimodal": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-multimodal",
+        "zig_bin": "eval-multimodal",
+        "jsonl": True,
+        "temp_paths": True,
+        "strip_tmp_ids": True,
+    },
 }
 
 
