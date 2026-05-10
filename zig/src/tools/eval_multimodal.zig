@@ -84,13 +84,17 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
 }
 
 fn configFromValue(value: std.json.Value) multimodal.MultimodalConfig {
-    const config_value = getField(value, "config") orelse return .{};
-    if (config_value != .object) return .{};
-    return .{
-        .max_images = getUsize(config_value, "max_images") orelse 4,
-        .max_image_size_mb = getUsize(config_value, "max_image_size_mb") orelse 5,
-        .allow_remote_fetch = getBool(config_value, "allow_remote_fetch") orelse false,
-    };
+    // Start from the library defaults, then override only fields the
+    // fixture explicitly set. Avoids the previous drift where the eval
+    // runner hardcoded `4` and `5` independently from the library's
+    // DEFAULT_MAX_IMAGES / DEFAULT_MAX_IMAGE_SIZE_MB constants.
+    var config = multimodal.MultimodalConfig{};
+    const config_value = getField(value, "config") orelse return config;
+    if (config_value != .object) return config;
+    if (getUsize(config_value, "max_images")) |v| config.max_images = v;
+    if (getUsize(config_value, "max_image_size_mb")) |v| config.max_image_size_mb = v;
+    if (getBool(config_value, "allow_remote_fetch")) |v| config.allow_remote_fetch = v;
+    return config;
 }
 
 fn writeScenarioFiles(allocator: std.mem.Allocator, value: std.json.Value) !void {

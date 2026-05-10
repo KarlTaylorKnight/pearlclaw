@@ -1302,3 +1302,51 @@ Closes the Phase 3-D first-pass for `rust/crates/zeroclaw-providers/src/multimod
 
 - Remote image fetch uses `std.http.Client.open` rather than `fetch` so the final response `content_type` / `content_length` are visible before body normalization. No live-network fixture was added.
 - Zig `prepareMessagesForProvider` returns canonical error tags through the eval runner, but the Zig public error surface is payload-free (`error.ImageTooLarge`, etc.) unlike Rust's contextual `MultimodalError` values.
+
+## 2026-05-10 — Multimodal first-pass review (Claude direct)
+
+Post-first-pass review of Codex's `295d798`. Method: a Code Reviewer subagent pass plus a manual scan for the two OOM patterns Codex was warned about in the brief. Both surfaced real bugs — none reachable by Codex's 7 happy-path fixtures, all on OOM or success-path-after-network-IO. This commit closes the must-fix and N-4 items, plus SF-1 (substitute drift). Remaining should-fix items (SF-2 untested error tags, SF-3 keep-alive body drain) and nits (N-1, N-2, N-3, N-5) stay queued for a separate Phase 3-D.1.
+
+### MF-1 — `convertUserMessageContent` count==0 fallback double-free
+
+`zig/src/providers/ollama/client.zig:563-572` — when every parsed image marker yielded `null` from `extractOllamaImagePayload` (e.g. malformed `[IMAGE:data:no-comma]`), the count==0 branch did `allocator.free(values); return .{ .content = try allocator.dupe(u8, content), .images = null };`. If the dupe OOMed, the blk-scoped `errdefer` (still armed because we hadn't broken out of the block) called `allocator.free(values)` a second time. Reachable by the standard FailingAllocator sweep on convertMessages with a `data:no-comma` marker. Fix: hoist the dupe before the manual `free(values)` so any OOM happens *before* the manual free, leaving the errdefer's free as the single owner.
+
+### N-4 — `prepareMessagesForProvider` transfer-of-ownership leak
+
+`zig/src/providers/multimodal.zig:184-189` — `try normalized_refs.append(try normalizeImageReference(...))` is the textbook double-try pattern: the inner alloc returns owned bytes, then the outer append can OOM before the bytes enter the list, stranding them outside any errdefer. Fix: hoist the inner result into a local with its own `errdefer allocator.free(...)`, then `ensureUnusedCapacity(1) + appendAssumeCapacity` so the transfer is atomic.
+
+### MF-2 — `body` ArrayList leaked on success in `normalizeRemoteImage`
+
+`zig/src/providers/multimodal.zig:394-395` — the `body` ArrayList had only `errdefer body.deinit()`, no plain `defer body.deinit()`. Every successful remote fetch leaked the full image bytes (up to `max_image_size_mb`). Untested today because no live-network fixture exists; would surface immediately when remote-fetch evals land. Fix: change `errdefer` → `defer`.
+
+### Bonus — `parseImageMarkers` candidate transfer leak (surfaced by the regression test)
+
+`zig/src/providers/multimodal.zig:77-92` — `try refs.append(candidate)` (the original Codex code) and even the first-attempt fix (`try refs.ensureUnusedCapacity(1); refs.appendAssumeCapacity(candidate)`) both leaked `candidate` if the ensureUnusedCapacity OOMed before append. The fix uses a `candidate_owned` flag pattern: errdefer frees iff still owned, set to `false` after candidate transfers to either `cleaned.appendSlice` (placeholder branch) or `refs` (loadable branch). Surfaced by the new MF-1 regression test — the test failed initially because the FailingAllocator sweep hit this codepath before reaching the count==0 branch.
+
+### SF-1 — Eliminate substitute-default drift
+
+`zig/src/tools/eval_multimodal.zig:86-99 configFromValue` — the runner hardcoded `4` and `5` as orelse-defaults independently from `multimodal.MultimodalConfig`'s field defaults at `multimodal.zig:22-26`. Brief explicitly called for "a single, replaceable location." Fix: start from `multimodal.MultimodalConfig{}` (which uses the library's `DEFAULT_MAX_IMAGES`/`DEFAULT_MAX_IMAGE_SIZE_MB` constants) and override only fields the fixture explicitly sets.
+
+### Regression test added
+
+`zig/src/providers/ollama/client.zig` — `test "convertUserMessageContent count==0 fallback is OOM-safe (regression for double-free)"`. Constructs a user message with a `data:no-comma` marker (parseImageMarkers extracts it as a ref; extractOllamaImagePayload returns null because no comma → count==0 branch fires), runs through the public `convertMessages` API under `std.testing.checkAllAllocationFailures`. The sweep fail_index = 4/10 surfaced both MF-1 and the bonus parseImageMarkers leak in sequence (fix one, sweep continues; fix the next, sweep passes). Asserts the fallback returns the *original* content (markers preserved) with `images = null`.
+
+### Skipped from the review
+
+- **SF-2 — Untested error tags** (`UnsupportedMime`, `RemoteFetchDisabled`, `LocalReadFailed`, `ImageSourceNotFound`, `InvalidMarker`, `ImageTooLarge`). Each should get a fixture; deferred to Phase 3-D.1 because the fixture authoring is a chunk of its own.
+- **SF-3 — Keep-alive pool drain on early-return**. Pilot is sync + low-volume; the connection thrash is a Phase 3-E or Phase 5.x concern when a real client wires this up.
+- **N-1 — Document `@enumFromInt(3)` for `redirect_behavior`**. Trivial; bundle with N-2 and N-3 in a future style sweep.
+- **N-2 — Dead `bytes_base64` accept path in `eval_multimodal.zig`**. Same.
+- **N-3 — Defensive `header["data:".len..]` slice check**. Caller-protected today; same.
+- **N-5 — `FailingAllocator` regression sweeps on `parseImageMarkers` and `prepareMessagesForProvider`**. The MF-1 regression test ALREADY exercises `parseImageMarkers` indirectly (and surfaced the bonus bug there). Standalone sweeps would add coverage but are deferred — the candidate-flag fix has been verified by the existing sweep.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `101/101 tests passed` (was 100/100; +1 MF-1 regression test).
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 149 fixtures OK; counts unchanged. Eval coverage doesn't reach the OOM paths these fixes close, but the SF-1 substitute-drift fix is exercised by every multimodal fixture that omits a `config` field.
+
+### Notes for future Codex briefs
+
+- The OOM-pattern reminders in the brief were necessary but not sufficient — Codex avoided the two specific patterns from `502f3e6`/`47a7dc8` but introduced two related transfer-of-ownership patterns (the `try normalized_refs.append(try ...)` and `try refs.append(candidate)` shapes). Future briefs should add a third template: "after any `try alloc(...)` whose result is then `try`-passed to a container, wrap the alloc in `errdefer free` and pre-reserve container capacity."
+- `errdefer body.deinit()` (without a matching `defer`) is a specific anti-pattern — the helper is success-aware (only fires on error), so resources allocated for use *during* success leak silently. Worth a brief reminder for HTTP/file-IO chunks.

@@ -561,9 +561,14 @@ fn convertUserMessageContent(
         }
 
         if (count == 0) {
+            // Alloc the fallback FIRST so we know we can return it; the
+            // previous order (free values; try dupe content) would double-
+            // free `values` when dupe OOMed because the blk-scoped errdefer
+            // is still armed at the point of the failing try.
+            const fallback_content = try allocator.dupe(u8, content);
             allocator.free(values);
             return .{
-                .content = try allocator.dupe(u8, content),
+                .content = fallback_content,
                 .images = null,
             };
         }
@@ -1550,6 +1555,37 @@ test "convertMessages extracts user multimodal images" {
     try std.testing.expect(converted[1].content == null);
     try std.testing.expectEqual(@as(usize, 1), converted[1].images.?.len);
     try std.testing.expectEqualStrings("efgh==", converted[1].images.?[0]);
+}
+
+fn convertUserMessageNoExtractableImagesOomImpl(allocator: std.mem.Allocator) !void {
+    // A `data:` marker without a comma passes isLoadableImageReference (so
+    // parseImageMarkers extracts it as a ref) but extractOllamaImagePayload
+    // returns null (no comma → no payload). That hits the count==0 fallback
+    // in convertUserMessageContent — the bug path that the new
+    // alloc-fallback-first / free-values-second ordering closes.
+    var provider = try OllamaProvider.new(allocator, null, null);
+    defer provider.deinit(allocator);
+
+    const history = [_]dispatcher.ChatMessage{
+        .{
+            .role = "user",
+            .content = "see [IMAGE:data:invalid_no_comma] please",
+        },
+    };
+
+    const converted = try provider.convertMessages(allocator, &history);
+    defer freeMessages(allocator, converted);
+
+    try std.testing.expectEqual(@as(usize, 1), converted.len);
+    // Fallback branch returns the ORIGINAL content (markers and all),
+    // NOT the cleaned text — preserves the user's original message rather
+    // than sending a stripped version with no images.
+    try std.testing.expectEqualStrings("see [IMAGE:data:invalid_no_comma] please", converted[0].content.?);
+    try std.testing.expect(converted[0].images == null);
+}
+
+test "convertUserMessageContent count==0 fallback is OOM-safe (regression for double-free)" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, convertUserMessageNoExtractableImagesOomImpl, .{});
 }
 
 test "convertMessages resolves tool role name by assistant id" {

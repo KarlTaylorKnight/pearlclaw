@@ -75,11 +75,21 @@ pub fn parseImageMarkers(allocator: std.mem.Allocator, content: []const u8) !Par
         const end = marker_start + rel_end;
 
         const candidate = try collapseWrappedMarker(allocator, content[marker_start..end]);
+        var candidate_owned = true;
+        errdefer if (candidate_owned) allocator.free(candidate);
         if (candidate.len == 0 or !isLoadableImageReference(candidate)) {
             allocator.free(candidate);
+            candidate_owned = false;
             try cleaned.appendSlice(content[start .. end + 1]);
         } else {
-            try refs.append(candidate);
+            // ensureUnusedCapacity may itself OOM; if it does, the local
+            // errdefer above frees `candidate` so it doesn't strand
+            // outside refs. After appendAssumeCapacity (infallible), the
+            // outer errdefer at the top of the function will free the
+            // candidate via refs.items iteration if a later try fails.
+            try refs.ensureUnusedCapacity(1);
+            refs.appendAssumeCapacity(candidate);
+            candidate_owned = false;
         }
 
         cursor = end + 1;
@@ -182,7 +192,10 @@ pub fn prepareMessagesForProvider(
             normalized_refs.deinit();
         }
         for (parsed.refs) |reference| {
-            try normalized_refs.append(try normalizeImageReference(allocator, reference, config, max_bytes, &remote_client));
+            const normalized_ref = try normalizeImageReference(allocator, reference, config, max_bytes, &remote_client);
+            errdefer allocator.free(normalized_ref);
+            try normalized_refs.ensureUnusedCapacity(1);
+            normalized_refs.appendAssumeCapacity(normalized_ref);
         }
         const normalized_refs_owned = try normalized_refs.toOwnedSlice();
         defer freeStringSlice(allocator, normalized_refs_owned);
@@ -392,7 +405,7 @@ fn normalizeRemoteImage(
     if (request.response.content_length) |content_length| try validateSize(sizeToUsize(content_length), max_bytes);
 
     var body = std.ArrayList(u8).init(allocator);
-    errdefer body.deinit();
+    defer body.deinit();
     request.reader().readAllArrayList(&body, max_bytes) catch |err| switch (err) {
         error.StreamTooLong => return error.ImageTooLarge,
         else => return error.RemoteFetchFailed,
