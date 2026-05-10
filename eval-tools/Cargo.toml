@@ -44,6 +44,10 @@ path = "src/bin/eval-multimodal.rs"
 name = "eval-provider-types"
 path = "src/bin/eval-provider-types.rs"
 
+[[bin]]
+name = "eval-provider-secrets"
+path = "src/bin/eval-provider-secrets.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
 zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }

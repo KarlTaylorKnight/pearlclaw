@@ -1606,3 +1606,38 @@ The provider→runtime back-reference in `provider.zig` is removed. The remainin
 - `cd zig && zig build test --summary all` — `107/107` tests passed, unchanged.
 - `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 158 fixtures OK, counts unchanged.
+
+## 2026-05-10 — Phase 6-A: providers/lib.rs scrub_secret_patterns + sanitize_api_error port (Codex first-pass)
+
+Ports the two remaining in-scope `providers/lib.rs` security helpers into Zig as a single-purpose provider secrets module. This commit intentionally does not bundle any factory/create-provider work; the Phase 6-A diff is limited to secret-pattern scrubbing, API-error sanitization, eval coverage, and root exports.
+
+### Source changes
+
+- `zig/src/providers/secrets.zig` — **new file**. Exposes `MAX_API_ERROR_CHARS`, `scrubSecretPatterns`, and `sanitizeApiError`; private helpers mirror Rust's `is_secret_char`, `token_end`, and `is_char_boundary` behavior. Returned slices are caller-owned and documented on both public functions.
+- `zig/src/providers/root.zig` — re-exports the new helpers so callers can use `@import("providers").scrubSecretPatterns`, `sanitizeApiError`, and `MAX_API_ERROR_CHARS`.
+- `eval-tools/src/bin/eval-provider-secrets.rs` and `zig/src/tools/eval_provider_secrets.zig` — new Rust/Zig parity runners for `scrub` and `sanitize` JSONL ops.
+- `evals/fixtures/provider_secrets/` — 7 new fixtures covering empty input, no-secret passthrough, single `sk-`, multi-prefix redaction, bare-prefix passthrough, ASCII truncation, and UTF-8 boundary truncation.
+- `evals/driver/run_evals.py`, `eval-tools/Cargo.toml`, and `zig/build.zig` — register the new `provider_secrets` subsystem and binaries.
+
+### Pinned answers
+
+- **File naming** — chose `secrets.zig`. It matches the single-purpose helper surface and avoids overloading Zig's conventional `lib.zig` entry-point naming.
+- **UTF-8 truncate cliff** — Zig matches Rust's two-step behavior: first `utf8CountCodepoints`, then byte index `500`, then walk backward while the byte is a UTF-8 continuation byte. The `scenario-truncate-utf8` fixture places `𝓤` (`F0 9D 93 A4`) after 499 ASCII bytes, so byte 500 lands inside the codepoint and the output backs up to 499 bytes before appending `...`.
+- **Bare-prefix infinite-loop guard** — `scrubPrefix` keeps bare prefixes unredacted and advances `search_from` to `content_start`, matching Rust's `end == content_start` guard. `scenario-bare-prefix` asserts exact passthrough for `sk-`.
+- **Overlapping prefixes / order** — the Zig `PREFIXES` array keeps Rust order exactly: `sk-`, `xoxb-`, `xoxp-`, `ghp_`, `gho_`, `ghu_`, `github_pat_`. Each prefix pass operates on the output of the previous pass for defensive parity even though the current set has no harmful prefix overlap.
+- **`[REDACTED]` literal** — replacement is the exact ASCII literal `[REDACTED]`. The Zig builder scans from the original token end for the active prefix, which is byte-equivalent to Rust's `search_from = start + "[REDACTED]".len()` after `replace_range`.
+
+### OOM / ownership notes
+
+- `scrubSecretPatterns` owns each intermediate buffer and allocates the replacement pass before freeing the previous pass, preserving the established free-then-realloc rule.
+- `scrubPrefix` computes the exact post-pass length, pre-reserves the `ArrayList`, uses `errdefer list.deinit()`, and returns with `toOwnedSlice()`.
+- Added `checkAllAllocationFailures` coverage over dense multi-prefix redaction plus a >500-char UTF-8-boundary input.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `113/113` tests passed (was `107/107`; +6 provider secrets tests including OOM).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` — `783` unit tests passed; provider doctest target ran with `1` ignored doctest.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin --subsystem provider_secrets` — `7/7` provider_secrets fixtures OK.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all `165` fixtures OK (`158` existing + `7` new provider_secrets).
