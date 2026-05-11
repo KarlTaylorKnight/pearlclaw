@@ -39,8 +39,22 @@ fn runOp(allocator: std.mem.Allocator, line: []const u8, writer: anytype) !void 
     try applySetup(allocator, setup);
     const workspace = getString(setup, "workspace") orelse getString(setup, "home") orelse return EvalError.InvalidScenario;
     try std.posix.chdir(workspace);
+    const workspace_canon = try std.fs.cwd().realpathAlloc(allocator, workspace);
+    defer allocator.free(workspace_canon);
 
-    var tool_impl = agent_tools.ContentSearchTool.init(allocator);
+    const security_config = getField(setup, "security");
+    const extra_blocked_paths = try getStringArray(allocator, security_config, "extra_blocked_paths");
+    defer allocator.free(extra_blocked_paths);
+    const security = agent_tools.content_search.SecurityStub{
+        .workspace_dir = workspace_canon,
+        .rate_limited = getBool(security_config, "rate_limited", false),
+        .action_budget = getI64(security_config, "action_budget", std.math.maxInt(i64)),
+        .allow_absolute_under_root = getBool(security_config, "allow_absolute_under_root", false),
+        .allow_resolved_outside_workspace = getBool(security_config, "allow_resolved_outside_workspace", false),
+        .extra_blocked_paths = extra_blocked_paths,
+    };
+
+    var tool_impl = agent_tools.ContentSearchTool.initWithBackend(security, false);
     defer tool_impl.deinit(allocator);
     var result = try tool_impl.tool().execute(allocator, args);
     defer result.deinit(allocator);
@@ -96,4 +110,32 @@ fn getString(value: std.json.Value, key: []const u8) ?[]const u8 {
     const inner = getField(value, key) orelse return null;
     if (inner != .string) return null;
     return inner.string;
+}
+
+fn getBool(value: ?std.json.Value, key: []const u8, default: bool) bool {
+    const outer = value orelse return default;
+    const inner = getField(outer, key) orelse return default;
+    if (inner != .bool) return default;
+    return inner.bool;
+}
+
+fn getI64(value: ?std.json.Value, key: []const u8, default: i64) i64 {
+    const outer = value orelse return default;
+    const inner = getField(outer, key) orelse return default;
+    if (inner != .integer) return default;
+    return std.math.cast(i64, inner.integer) orelse default;
+}
+
+fn getStringArray(allocator: std.mem.Allocator, value: ?std.json.Value, key: []const u8) ![]const []const u8 {
+    const outer = value orelse return allocator.alloc([]const u8, 0);
+    const inner = getField(outer, key) orelse return allocator.alloc([]const u8, 0);
+    if (inner != .array) return EvalError.InvalidScenario;
+
+    const items = try allocator.alloc([]const u8, inner.array.items.len);
+    errdefer allocator.free(items);
+    for (inner.array.items, 0..) |item, idx| {
+        if (item != .string) return EvalError.InvalidScenario;
+        items[idx] = item.string;
+    }
+    return items;
 }

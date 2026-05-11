@@ -1,0 +1,1 @@
+{"op":"execute","result":{"error":"Path traversal ('..') is not allowed.","output":"","success":false},"tool":"content_search"}

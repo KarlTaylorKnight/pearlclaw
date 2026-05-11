@@ -1931,28 +1931,41 @@ The Rust eval runner (`eval-file-tools.rs:34-41`) does NOT call `chdir`; the Zig
 
 ## 2026-05-11 — Phase 7-D: content_search port (Codex first-pass)
 
-Phase 7-D ports `content_search` as a grep-only member of the filesystem tool family. The Zig tool lives at `zig/src/agent_tools/content_search.zig`, is exported through `agent_tools/root.zig`, and is covered by the new `content_search` eval subsystem. The Rust eval runner is forced onto the same grep backend so fixture output is deterministic with respect to backend choice and does not depend on whether `rg` is installed on a developer machine.
+Phase 7-D ports Rust `zeroclaw-tools/src/content_search.rs` into `zig/src/agent_tools/content_search.zig` as a sync Tool-vtable agent tool. The eval surface is `eval-content-search` on both sides, registered under the existing `content_search` eval subsystem.
 
-Pinned decisions:
+### Source changes
 
-- Rust eval-runner backend selection: added `ContentSearchTool::with_grep_only(security)` as a minimal public additive constructor in `rust/crates/zeroclaw-tools/src/content_search.rs`. The new eval runner calls that constructor, leaving `new()` and the existing `#[cfg(test)] new_with_backend(...)` behavior untouched.
-- Zig backend scope: implemented only the Rust grep fallback path. The rg-specific `build_rg_command` and `format_rg_output` branches remain out of scope for the pilot.
-- SecurityPolicy parity: still deferred. Zig expands `~` through `fs_common.expandTilde`, canonicalizes the requested path, canonicalizes the current working directory as the eval workspace, and rejects paths outside that workspace by realpath prefix check. Full `zeroclaw-config` policy behavior remains future work.
-- Subprocess timeout: Zig uses `std.process.Child`, reads stdout/stderr pipes through `std.posix.poll` at 100 ms intervals, checks completion with `std.posix.waitpid(pid, W.NOHANG)`, sends SIGTERM at 30 seconds, then SIGKILL after a 1 second grace period. Raw capture is bounded at 2 MB to avoid runaway output growth; final formatted output still uses Rust's 1 MB UTF-8-boundary truncation marker.
-- Grep argument construction mirrors Rust's `build_grep_command`: `grep -r -n -E --binary-files=without-match`, plus `-l` for `files_with_matches`, `-c` for `count`, `-B N`/`-A N` only for content context, `-i` when `case_sensitive=false`, `--include PATTERN`, then `--`, `pattern`, and the canonical search path.
-- Output modes mirror Rust's grep formatter: content counts matching `path:line:` rows only, context rows use `path-line-`, `files_with_matches` dedupes paths, and `count` filters zero-count rows while summing positive counts.
-- Regex flavor is POSIX ERE through `grep -E`. Fixtures exercise alternation, character classes, and anchors without adding a separate Zig regex engine.
-- Output truncation fixture was skipped. The UTF-8 truncation helper is unit-tested in Zig, but a portable 1 MB grep-output fixture would be large and noisy for this eval set.
+- `zig/src/agent_tools/content_search.zig` — full tool port: schema/description parity, rg and grep command builders, local subprocess helper with 30s timeout, output formatting, parser helpers, SecurityStub, and three OOM sweeps.
+- `zig/src/agent_tools/root.zig` — already exports `content_search` and `ContentSearchTool`; no new root change was needed in this pass.
+- `zig/src/tools/eval_content_search.zig` — constructs `ContentSearchTool.initWithBackend(security, false)`, canonicalizes fixture workspace roots, and maps fixture `setup.security` into the Zig SecurityStub.
+- `rust/crates/zeroclaw-tools/src/content_search.rs` — changed `new_with_backend` from `#[cfg(test)] fn` to `#[doc(hidden)] pub fn` so eval code can force the backend without machine-local rg detection.
+- `eval-tools/src/bin/eval-content-search.rs` — now calls `ContentSearchTool::new_with_backend(security, false)` and maps fixture security flags into `SecurityPolicy` where Rust supports them.
+- `evals/fixtures/content_search/` — expanded to 20 fixtures covering basic content, files-with-matches, count, case-insensitive, include, context, no matches, empty/missing pattern, invalid output mode, absolute/traversal rejection, subdirectory search, multiline-without-rg, rate limit, regex syntax, max-results, multiple files, relative path resolution, and colon-in-count-path parsing.
 
-Fixtures:
+### Pinned decisions
 
-- Added 14 `content_search` eval fixtures: basic content search, no matches, multiple files, case-insensitive search, context, include glob, files-with-matches, count, max-results cap, POSIX ERE special chars, multiline grep error, missing pattern, empty pattern, and relative path resolution.
-- The Rust runner catches `execute()` errors and serializes them as failed tool results so the missing-pattern fixture can pin Rust's `Missing 'pattern' parameter` behavior instead of aborting the runner.
+- **Subprocess helper stays private to `content_search.zig`.** This is the first agent_tools subprocess use. It uses `std.io.poll(...).pollTimeout(...)` to drain stdout/stderr continuously, applies a 4 MB pipe cap, sends `posix.SIG.KILL` on timeout, and always reaps with `child.wait()`. No `process_common.zig` extraction was added.
+- **Parsers are hand-coded.** `parseContentLine` scans for the first `:digits:` or `-digits-` triple, and `parseCountLine` splits on the last `:digits` suffix. This avoids a Zig regex dependency for two Rust-compatible line-shape parsers and matches the colon-in-path fixtures.
+- **SecurityStub field list is exactly the requested seven fields:** `workspace_dir`, `rate_limited`, `action_budget`, `allow_absolute_under_root`, `allow_resolved_outside_workspace`, `extra_blocked_paths`, plus methods only. No extra policy fields were added.
+- **Eval backend is forced symmetrically.** Rust eval calls `ContentSearchTool::new_with_backend(security, false)`; Zig eval calls `ContentSearchTool.initWithBackend(security, false)`. The eval fixtures therefore never depend on whether `rg` exists on the developer machine.
+- **OOM ownership fix:** the content formatter transfers relativized line ownership before append calls that may fail, preventing double-free on allocation failure. The successful OOM sweep uses a narrow mock stdout hook to avoid repeatedly spawning subprocesses inside `checkAllAllocationFailures`; normal unit tests and all eval fixtures still exercise real grep.
 
-Verification:
+### Phase 7-D conventions added
+
+- `content_search` joins the Phase 7-C fixture convention: integration fixture setup paths are absolute `$TMP/...` or `~/...`; relative search paths are used only as tool arguments such as `"."` or `"sub"`.
+- `content_search` joins the Phase 7-C.1 OOM convention: three sweeps in one test block (`executeHappyOomImpl`, `executeErrorOomImpl`, `parametersSchemaOomImpl`).
+- Eval-runner backend selection is now a formal convention: content_search parity fixtures force `has_rg=false` on both sides; rg-path behavior remains in in-process tests and production detection.
+
+### Verification
 
 - `cd zig && zig build` — clean.
-- `cd zig && zig build test --summary all` — `156/156` tests passed.
+- `cd zig && zig build test --summary all` — `158/158` tests passed.
 - `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
 - `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-tools --release` — `1119` tests passed, `1` doctest ignored unchanged.
-- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all `259` fixtures OK (`245` existing + `14` new content_search fixtures).
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all `265` fixtures OK, including `20/20` `content_search` fixtures.
+
+### Remaining risks
+
+- Full Rust `SecurityPolicy` parity is still deferred; the Zig SecurityStub only covers the behavior content_search calls.
+- rg/grep version skew could matter if future fixtures exercise the rg path. Current integration fixtures intentionally pin grep fallback via `has_rg=false`.
+- The 1 MB output-truncation path is unit-covered through UTF-8 truncation logic but not pinned by a large integration fixture.

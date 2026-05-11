@@ -1,6 +1,8 @@
-//! ContentSearchTool grep-only port of `zeroclaw-tools/src/content_search.rs`.
+//! ContentSearchTool port of `zeroclaw-tools/src/content_search.rs`.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const posix = std.posix;
 const common = @import("fs_common.zig");
 
 pub const Tool = common.Tool;
@@ -16,67 +18,123 @@ const DESCRIPTION =
 
 const MAX_RESULTS: usize = 1000;
 const MAX_OUTPUT_BYTES: usize = 1_048_576;
-const RAW_CAPTURE_LIMIT: usize = MAX_OUTPUT_BYTES * 2;
-const TIMEOUT_MS: i64 = 30_000;
-const POLL_INTERVAL_MS: i32 = 100;
-const SIGTERM_GRACE_MS: i64 = 1_000;
+const TIMEOUT_SECS: u64 = 30;
+const TIMEOUT_NS: u64 = TIMEOUT_SECS * std.time.ns_per_s;
+const MAX_PIPE_BYTES: usize = 4 * 1024 * 1024;
 
 const PARAMETERS_SCHEMA_JSON =
     \\{
+    \\  "type": "object",
     \\  "properties": {
-    \\    "case_sensitive": {
-    \\      "default": true,
-    \\      "description": "Case-sensitive matching. Defaults to true",
-    \\      "type": "boolean"
-    \\    },
-    \\    "context_after": {
-    \\      "default": 0,
-    \\      "description": "Lines of context after each match (content mode only)",
-    \\      "type": "integer"
-    \\    },
-    \\    "context_before": {
-    \\      "default": 0,
-    \\      "description": "Lines of context before each match (content mode only)",
-    \\      "type": "integer"
-    \\    },
-    \\    "include": {
-    \\      "description": "File glob filter, e.g. '*.rs', '*.{ts,tsx}'",
-    \\      "type": "string"
-    \\    },
-    \\    "max_results": {
-    \\      "default": 1000,
-    \\      "description": "Maximum number of results to return. Defaults to 1000",
-    \\      "type": "integer"
-    \\    },
-    \\    "multiline": {
-    \\      "default": false,
-    \\      "description": "Enable multiline matching (ripgrep only, errors on grep fallback)",
-    \\      "type": "boolean"
-    \\    },
-    \\    "output_mode": {
-    \\      "default": "content",
-    \\      "description": "Output format: 'content' (matching lines), 'files_with_matches' (paths only), 'count' (match counts)",
-    \\      "enum": ["content", "files_with_matches", "count"],
-    \\      "type": "string"
+    \\    "pattern": {
+    \\      "type": "string",
+    \\      "description": "Regular expression pattern to search for"
     \\    },
     \\    "path": {
-    \\      "default": ".",
+    \\      "type": "string",
     \\      "description": "Directory to search in, relative to workspace root. Defaults to '.'",
-    \\      "type": "string"
+    \\      "default": "."
     \\    },
-    \\    "pattern": {
-    \\      "description": "Regular expression pattern to search for",
-    \\      "type": "string"
+    \\    "output_mode": {
+    \\      "type": "string",
+    \\      "description": "Output format: 'content' (matching lines), 'files_with_matches' (paths only), 'count' (match counts)",
+    \\      "enum": ["content", "files_with_matches", "count"],
+    \\      "default": "content"
+    \\    },
+    \\    "include": {
+    \\      "type": "string",
+    \\      "description": "File glob filter, e.g. '*.rs', '*.{ts,tsx}'"
+    \\    },
+    \\    "case_sensitive": {
+    \\      "type": "boolean",
+    \\      "description": "Case-sensitive matching. Defaults to true",
+    \\      "default": true
+    \\    },
+    \\    "context_before": {
+    \\      "type": "integer",
+    \\      "description": "Lines of context before each match (content mode only)",
+    \\      "default": 0
+    \\    },
+    \\    "context_after": {
+    \\      "type": "integer",
+    \\      "description": "Lines of context after each match (content mode only)",
+    \\      "default": 0
+    \\    },
+    \\    "multiline": {
+    \\      "type": "boolean",
+    \\      "description": "Enable multiline matching (ripgrep only, errors on grep fallback)",
+    \\      "default": false
+    \\    },
+    \\    "max_results": {
+    \\      "type": "integer",
+    \\      "description": "Maximum number of results to return. Defaults to 1000",
+    \\      "default": 1000
     \\    }
     \\  },
-    \\  "required": ["pattern"],
-    \\  "type": "object"
+    \\  "required": ["pattern"]
     \\}
 ;
 
+// TODO(SecurityPolicy port): replace this content_search-local shim once the
+// Rust SecurityPolicy surface exists in Zig.
+pub const SecurityStub = struct {
+    workspace_dir: []const u8,
+    rate_limited: bool = false,
+    action_budget: i64 = std.math.maxInt(i64),
+    allow_absolute_under_root: bool = false,
+    allow_resolved_outside_workspace: bool = false,
+    extra_blocked_paths: []const []const u8 = &.{},
+
+    pub fn isRateLimited(self: *const SecurityStub) bool {
+        return self.rate_limited;
+    }
+
+    pub fn recordAction(self: *SecurityStub) bool {
+        if (self.action_budget <= 0) return false;
+        self.action_budget -= 1;
+        return true;
+    }
+
+    pub fn isUnderAllowedRoot(self: *const SecurityStub, path: []const u8) bool {
+        return self.allow_absolute_under_root and std.mem.startsWith(u8, path, self.workspace_dir);
+    }
+
+    pub fn isPathAllowed(self: *const SecurityStub, path: []const u8) bool {
+        for (self.extra_blocked_paths) |blocked| {
+            if (std.mem.eql(u8, path, blocked)) return false;
+        }
+        return true;
+    }
+
+    pub fn resolveToolPath(self: *const SecurityStub, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+        const expanded = try common.expandTilde(allocator, path);
+        errdefer allocator.free(expanded);
+        if (std.fs.path.isAbsolute(expanded)) return expanded;
+        const joined = try std.fs.path.join(allocator, &.{ self.workspace_dir, expanded });
+        allocator.free(expanded);
+        return joined;
+    }
+
+    pub fn isResolvedPathAllowed(self: *const SecurityStub, resolved: []const u8) bool {
+        return self.allow_resolved_outside_workspace or std.mem.startsWith(u8, resolved, self.workspace_dir);
+    }
+};
+
 pub const ContentSearchTool = struct {
-    pub fn init(_: std.mem.Allocator) ContentSearchTool {
-        return .{};
+    security: ?SecurityStub,
+    has_rg: bool,
+    mock_stdout: ?[]const u8,
+
+    pub fn init(allocator: std.mem.Allocator) ContentSearchTool {
+        return .{
+            .security = null,
+            .has_rg = detectExecutableInPath(allocator, "rg"),
+            .mock_stdout = null,
+        };
+    }
+
+    pub fn initWithBackend(security: SecurityStub, has_rg: bool) ContentSearchTool {
+        return .{ .security = security, .has_rg = has_rg, .mock_stdout = null };
     }
 
     pub fn deinit(_: *ContentSearchTool, _: std.mem.Allocator) void {}
@@ -106,8 +164,8 @@ pub const ContentSearchTool = struct {
     }
 
     fn executeImpl(ptr: *anyopaque, allocator: std.mem.Allocator, args: std.json.Value) anyerror!ToolResult {
-        _ = @as(*ContentSearchTool, @ptrCast(@alignCast(ptr)));
-        return common.resultFromReturn(allocator, try dispatch(allocator, args));
+        const self: *ContentSearchTool = @ptrCast(@alignCast(ptr));
+        return common.resultFromReturn(allocator, try self.dispatch(allocator, args));
     }
 
     fn deinitImpl(ptr: *anyopaque, allocator: std.mem.Allocator) void {
@@ -118,6 +176,20 @@ pub const ContentSearchTool = struct {
     pub fn parametersSchema(allocator: std.mem.Allocator) !std.json.Value {
         return common.parametersSchema(allocator, PARAMETERS_SCHEMA_JSON);
     }
+
+    fn dispatch(self: *ContentSearchTool, allocator: std.mem.Allocator, args: std.json.Value) !common.FsReturn {
+        if (self.security) |*security| {
+            return dispatchWithSecurity(allocator, args, security, self.has_rg, self.mock_stdout);
+        }
+
+        const workspace_canon = std.fs.cwd().realpathAlloc(allocator, ".") catch |err| {
+            return common.failureFmt(allocator, "Cannot resolve path '.': {s}", .{common.rustIoError(err)});
+        };
+        defer allocator.free(workspace_canon);
+
+        var security = SecurityStub{ .workspace_dir = workspace_canon };
+        return dispatchWithSecurity(allocator, args, &security, self.has_rg, self.mock_stdout);
+    }
 };
 
 const OutputMode = enum {
@@ -126,7 +198,13 @@ const OutputMode = enum {
     count,
 };
 
-fn dispatch(allocator: std.mem.Allocator, args: std.json.Value) !common.FsReturn {
+fn dispatchWithSecurity(
+    allocator: std.mem.Allocator,
+    args: std.json.Value,
+    security: *SecurityStub,
+    has_rg: bool,
+    mock_stdout: ?[]const u8,
+) !common.FsReturn {
     var reader = common.JsonArgs{ .allocator = allocator, .value = args };
     defer reader.deinit();
 
@@ -151,24 +229,38 @@ fn dispatch(allocator: std.mem.Allocator, args: std.json.Value) !common.FsReturn
     const multiline = optionalBool(reader, "multiline", false);
     const max_results = @min(optionalUsize(reader, "max_results", MAX_RESULTS), MAX_RESULTS);
 
-    if (multiline) {
-        return common.failure(allocator, "Multiline matching requires ripgrep (rg), which is not available.");
+    if (security.isRateLimited()) {
+        return common.failure(allocator, "Rate limit exceeded: too many actions in the last hour");
     }
 
-    const expanded_path = try common.expandTilde(allocator, search_path);
-    defer allocator.free(expanded_path);
+    if (std.fs.path.isAbsolute(search_path) and !security.isUnderAllowedRoot(search_path)) {
+        return common.failure(allocator, "Absolute paths are not allowed. Use a relative path.");
+    }
 
-    const resolved_path = std.fs.realpathAlloc(allocator, expanded_path) catch |err| {
-        return common.failureFmt(allocator, "Cannot resolve path '{s}': {s}", .{ search_path, common.rustIoError(err) });
-    };
+    if (std.mem.eql(u8, search_path, "..") or
+        std.mem.indexOf(u8, search_path, "../") != null or
+        std.mem.indexOf(u8, search_path, "..\\") != null)
+    {
+        return common.failure(allocator, "Path traversal ('..') is not allowed.");
+    }
+
+    if (!security.isPathAllowed(search_path)) {
+        return common.failureFmt(allocator, "Path '{s}' is not allowed by security policy.", .{search_path});
+    }
+
+    if (!security.recordAction()) {
+        return common.failure(allocator, "Rate limit exceeded: action budget exhausted");
+    }
+
+    const resolved_path = try security.resolveToolPath(allocator, search_path);
     defer allocator.free(resolved_path);
 
-    const workspace_canon = std.fs.cwd().realpathAlloc(allocator, ".") catch |err| {
-        return common.failureFmt(allocator, "Cannot resolve path '.': {s}", .{common.rustIoError(err)});
+    const resolved_canon = std.fs.cwd().realpathAlloc(allocator, resolved_path) catch |err| {
+        return common.failureFmt(allocator, "Cannot resolve path '{s}': {s}", .{ search_path, common.rustIoError(err) });
     };
-    defer allocator.free(workspace_canon);
+    defer allocator.free(resolved_canon);
 
-    if (!isWithinWorkspace(resolved_path, workspace_canon)) {
+    if (!security.isResolvedPathAllowed(resolved_canon)) {
         return common.failureFmt(
             allocator,
             "Resolved path for '{s}' is outside the allowed workspace.",
@@ -176,47 +268,88 @@ fn dispatch(allocator: std.mem.Allocator, args: std.json.Value) !common.FsReturn
         );
     }
 
-    var args_builder = CommandArgs.init(allocator);
-    defer args_builder.deinit();
-    try buildGrepCommand(
-        &args_builder,
-        pattern,
-        resolved_path,
-        output_mode,
-        include,
-        case_sensitive,
-        context_before,
-        context_after,
-    );
+    if (multiline and !has_rg) {
+        return common.failure(allocator, "Multiline matching requires ripgrep (rg), which is not available.");
+    }
 
-    var env = try safeEnv(allocator);
-    defer env.deinit();
+    const workspace_canon = std.fs.cwd().realpathAlloc(allocator, security.workspace_dir) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => try allocator.dupe(u8, security.workspace_dir),
+    };
+    defer allocator.free(workspace_canon);
 
-    var process = runCommand(allocator, args_builder.argv.items, &env) catch |err| switch (err) {
+    var command = CommandArgs.init(allocator);
+    defer command.deinit();
+    if (has_rg) {
+        try buildRgCommand(
+            &command,
+            pattern,
+            resolved_canon,
+            output_mode,
+            include,
+            case_sensitive,
+            context_before,
+            context_after,
+            multiline,
+        );
+    } else {
+        try buildGrepCommand(
+            &command,
+            pattern,
+            resolved_canon,
+            output_mode,
+            include,
+            case_sensitive,
+            context_before,
+            context_after,
+        );
+    }
+
+    if (mock_stdout) |raw| {
+        return formatSearchOutput(allocator, raw, workspace_canon, output_mode, max_results, has_rg);
+    }
+
+    var process = runSearchCommand(allocator, command.argv.items) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return common.failureFmt(allocator, "Failed to execute search command: {s}", .{@errorName(err)}),
     };
     defer process.deinit(allocator);
 
     if (process.timed_out) {
-        return common.failureFmt(allocator, "Search timed out after {d} seconds.", .{TIMEOUT_MS / 1000});
+        return common.failure(allocator, "Search timed out after 30 seconds.");
     }
 
-    if (process.exit_code >= 2 and !process.stdout_capped) {
-        return common.failureFmt(allocator, "Search error: {s}", .{std.mem.trim(u8, process.stderr, " \t\r\n")});
+    if (process.exit_code >= 2 or process.exit_code < 0) {
+        const stderr_trimmed = std.mem.trim(u8, process.stderr, " \t\r\n");
+        return common.failureFmt(allocator, "Search error: {s}", .{stderr_trimmed});
     }
 
-    const formatted = try formatGrepOutput(allocator, process.stdout, workspace_canon, output_mode, max_results);
+    return formatSearchOutput(allocator, process.stdout, workspace_canon, output_mode, max_results, has_rg);
+}
+
+fn formatSearchOutput(
+    allocator: std.mem.Allocator,
+    raw_stdout: []const u8,
+    workspace_canon: []const u8,
+    output_mode: OutputMode,
+    max_results: usize,
+    has_rg: bool,
+) !common.FsReturn {
+    const formatted = if (has_rg)
+        try formatRgOutput(allocator, raw_stdout, workspace_canon, output_mode, max_results)
+    else
+        try formatGrepOutput(allocator, raw_stdout, workspace_canon, output_mode, max_results);
     errdefer allocator.free(formatted);
 
-    if (formatted.len > MAX_OUTPUT_BYTES or process.stdout_capped) {
-        const end = truncateUtf8(formatted, MAX_OUTPUT_BYTES);
-        var output = std.ArrayList(u8).init(allocator);
-        errdefer output.deinit();
-        try output.appendSlice(end);
-        try output.appendSlice("\n\n[Output truncated: exceeded 1 MB limit]");
+    if (formatted.len > MAX_OUTPUT_BYTES) {
+        const trimmed = truncateUtf8(formatted, MAX_OUTPUT_BYTES);
+        var final_output = std.ArrayList(u8).init(allocator);
+        errdefer final_output.deinit();
+        try final_output.appendSlice(trimmed);
+        try final_output.appendSlice("\n\n[Output truncated: exceeded 1 MB limit]");
+        const owned = try final_output.toOwnedSlice();
         allocator.free(formatted);
-        return .{ .output = try output.toOwnedSlice() };
+        return .{ .output = owned };
     }
 
     return .{ .output = formatted };
@@ -245,13 +378,6 @@ fn parseOutputMode(raw: []const u8) ?OutputMode {
     if (std.mem.eql(u8, raw, "files_with_matches")) return .files_with_matches;
     if (std.mem.eql(u8, raw, "count")) return .count;
     return null;
-}
-
-fn isWithinWorkspace(path: []const u8, workspace: []const u8) bool {
-    if (std.mem.eql(u8, path, workspace)) return true;
-    if (!std.mem.startsWith(u8, path, workspace)) return false;
-    if (path.len == workspace.len) return true;
-    return path[workspace.len] == '/' or path[workspace.len] == '\\';
 }
 
 const CommandArgs = struct {
@@ -290,6 +416,51 @@ const CommandArgs = struct {
         try self.appendOwned(text);
     }
 };
+
+fn buildRgCommand(
+    command: *CommandArgs,
+    pattern: []const u8,
+    search_path: []const u8,
+    output_mode: OutputMode,
+    include: ?[]const u8,
+    case_sensitive: bool,
+    context_before: usize,
+    context_after: usize,
+    multiline: bool,
+) !void {
+    try command.append("rg");
+    try command.append("--no-heading");
+    try command.append("--line-number");
+    try command.append("--with-filename");
+
+    switch (output_mode) {
+        .files_with_matches => try command.append("--files-with-matches"),
+        .count => try command.append("--count"),
+        .content => {
+            if (context_before > 0) {
+                try command.append("-B");
+                try command.appendUsize(context_before);
+            }
+            if (context_after > 0) {
+                try command.append("-A");
+                try command.appendUsize(context_after);
+            }
+        },
+    }
+
+    if (!case_sensitive) try command.append("-i");
+    if (multiline) {
+        try command.append("-U");
+        try command.append("--multiline-dotall");
+    }
+    if (include) |glob| {
+        try command.append("--glob");
+        try command.append(glob);
+    }
+    try command.append("--");
+    try command.append(pattern);
+    try command.append(search_path);
+}
 
 fn buildGrepCommand(
     command: *CommandArgs,
@@ -332,29 +503,11 @@ fn buildGrepCommand(
     try command.append(search_path);
 }
 
-fn safeEnv(allocator: std.mem.Allocator) !std.process.EnvMap {
-    var env = std.process.EnvMap.init(allocator);
-    errdefer env.deinit();
-
-    const keys = [_][]const u8{ "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE" };
-    for (keys) |key| {
-        const value = std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => continue,
-            error.OutOfMemory => return err,
-            else => continue,
-        };
-        defer allocator.free(value);
-        try env.put(key, value);
-    }
-    return env;
-}
-
 const ProcessOutput = struct {
     stdout: []u8,
     stderr: []u8,
     exit_code: i32,
     timed_out: bool,
-    stdout_capped: bool,
 
     fn deinit(self: *ProcessOutput, allocator: std.mem.Allocator) void {
         allocator.free(self.stdout);
@@ -362,125 +515,107 @@ const ProcessOutput = struct {
     }
 };
 
-fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8, env: *const std.process.EnvMap) !ProcessOutput {
+fn runSearchCommand(allocator: std.mem.Allocator, argv: []const []const u8) !ProcessOutput {
+    var env_map = std.process.EnvMap.init(allocator);
+    defer env_map.deinit();
+    inline for (.{ "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE" }) |key| {
+        if (std.process.getEnvVarOwned(allocator, key)) |val| {
+            defer allocator.free(val);
+            try env_map.put(key, val);
+        } else |err| switch (err) {
+            error.EnvironmentVariableNotFound => {},
+            error.OutOfMemory => return err,
+            else => {},
+        }
+    }
+
     var child = std.process.Child.init(argv, allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
-    child.env_map = env;
-
+    child.env_map = &env_map;
     try child.spawn();
-    var spawned = true;
-    errdefer if (spawned) {
-        _ = child.kill() catch {};
+    var child_running = true;
+    errdefer if (child_running) {
+        posix.kill(child.id, posix.SIG.KILL) catch {};
+        _ = child.wait() catch {};
     };
-    try child.waitForSpawn();
 
-    var stdout = std.ArrayList(u8).init(allocator);
-    errdefer stdout.deinit();
-    var stderr = std.ArrayList(u8).init(allocator);
-    errdefer stderr.deinit();
+    const Pipe = enum { stdout, stderr };
+    var poller = std.io.poll(allocator, Pipe, .{
+        .stdout = child.stdout.?,
+        .stderr = child.stderr.?,
+    });
+    defer poller.deinit();
 
-    var stdout_open = child.stdout != null;
-    var stderr_open = child.stderr != null;
-    var stdout_capped = false;
-    var stderr_capped = false;
-    var exited = false;
-    var status: u32 = 0;
-    var sent_term = false;
-    var sent_kill = false;
+    const deadline = std.time.nanoTimestamp() + @as(i128, @intCast(TIMEOUT_NS));
     var timed_out = false;
-    var term_sent_at: i64 = 0;
-    const started_at = std.time.milliTimestamp();
-
-    while (!exited or stdout_open or stderr_open) {
-        if (!exited) {
-            const res = std.posix.waitpid(child.id, std.posix.W.NOHANG);
-            if (res.pid == child.id) {
-                exited = true;
-                status = res.status;
-                spawned = false;
-            }
+    while (true) {
+        const now = std.time.nanoTimestamp();
+        if (now >= deadline) {
+            timed_out = true;
+            break;
         }
-
-        const now = std.time.milliTimestamp();
-        if (!exited and !sent_term and (now - started_at >= TIMEOUT_MS or stdout_capped or stderr_capped)) {
-            timed_out = now - started_at >= TIMEOUT_MS;
-            std.posix.kill(child.id, std.posix.SIG.TERM) catch {};
-            sent_term = true;
-            term_sent_at = now;
+        const remaining: u64 = @intCast(deadline - now);
+        const had_event = try poller.pollTimeout(remaining);
+        if (!had_event) break;
+        if (poller.fifo(.stdout).count > MAX_PIPE_BYTES) {
+            posix.kill(child.id, posix.SIG.KILL) catch {};
+            _ = child.wait() catch {};
+            child_running = false;
+            return error.StdoutStreamTooLong;
         }
-        if (!exited and sent_term and !sent_kill and now - term_sent_at >= SIGTERM_GRACE_MS) {
-            std.posix.kill(child.id, std.posix.SIG.KILL) catch {};
-            sent_kill = true;
-        }
-
-        var pollfds = [_]std.posix.pollfd{
-            .{ .fd = if (stdout_open) child.stdout.?.handle else -1, .events = std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR, .revents = 0 },
-            .{ .fd = if (stderr_open) child.stderr.?.handle else -1, .events = std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR, .revents = 0 },
-        };
-
-        if (stdout_open or stderr_open) {
-            _ = try std.posix.poll(&pollfds, POLL_INTERVAL_MS);
-        } else if (!exited) {
-            std.time.sleep(10 * std.time.ns_per_ms);
-        }
-
-        if (stdout_open and (pollfds[0].revents & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR)) != 0) {
-            if (child.stdout) |*file| {
-                stdout_open = try readPipe(file, &stdout, &stdout_capped);
-                if (!stdout_open) child.stdout = null;
-            }
-        }
-
-        if (stderr_open and (pollfds[1].revents & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR)) != 0) {
-            if (child.stderr) |*file| {
-                stderr_open = try readPipe(file, &stderr, &stderr_capped);
-                if (!stderr_open) child.stderr = null;
-            }
+        if (poller.fifo(.stderr).count > MAX_PIPE_BYTES) {
+            posix.kill(child.id, posix.SIG.KILL) catch {};
+            _ = child.wait() catch {};
+            child_running = false;
+            return error.StderrStreamTooLong;
         }
     }
 
-    if (child.stdout) |*file| file.close();
-    child.stdout = null;
-    if (child.stderr) |*file| file.close();
-    child.stderr = null;
+    const so_fifo = poller.fifo(.stdout);
+    const se_fifo = poller.fifo(.stderr);
+    if (so_fifo.head != 0) so_fifo.realign();
+    if (se_fifo.head != 0) se_fifo.realign();
+    const stdout_owned = try allocator.dupe(u8, so_fifo.buf[0..so_fifo.count]);
+    errdefer allocator.free(stdout_owned);
+    const stderr_owned = try allocator.dupe(u8, se_fifo.buf[0..se_fifo.count]);
+    errdefer allocator.free(stderr_owned);
 
-    const stdout_slice = try stdout.toOwnedSlice();
-    errdefer allocator.free(stdout_slice);
-    const stderr_slice = try stderr.toOwnedSlice();
-    errdefer allocator.free(stderr_slice);
+    if (timed_out) {
+        posix.kill(child.id, posix.SIG.KILL) catch {};
+        _ = child.wait() catch {};
+        child_running = false;
+        return .{
+            .stdout = stdout_owned,
+            .stderr = stderr_owned,
+            .exit_code = -1,
+            .timed_out = true,
+        };
+    }
 
+    const term = try child.wait();
+    child_running = false;
+    const exit_code: i32 = switch (term) {
+        .Exited => |code| @intCast(code),
+        else => -1,
+    };
     return .{
-        .stdout = stdout_slice,
-        .stderr = stderr_slice,
-        .exit_code = exitCode(status),
-        .timed_out = timed_out,
-        .stdout_capped = stdout_capped,
+        .stdout = stdout_owned,
+        .stderr = stderr_owned,
+        .exit_code = exit_code,
+        .timed_out = false,
     };
 }
 
-fn readPipe(file: *std.fs.File, output: *std.ArrayList(u8), capped: *bool) !bool {
-    var buf: [8192]u8 = undefined;
-    const n = try std.posix.read(file.handle, &buf);
-    if (n == 0) {
-        file.close();
-        return false;
-    }
-    if (output.items.len < RAW_CAPTURE_LIMIT) {
-        const remaining = RAW_CAPTURE_LIMIT - output.items.len;
-        const take = @min(remaining, n);
-        try output.appendSlice(buf[0..take]);
-        if (take < n) capped.* = true;
-    } else {
-        capped.* = true;
-    }
-    return true;
-}
-
-fn exitCode(status: u32) i32 {
-    if (std.posix.W.IFEXITED(status)) return std.posix.W.EXITSTATUS(status);
-    return -1;
+fn formatRgOutput(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    workspace_canon: []const u8,
+    output_mode: OutputMode,
+    max_results: usize,
+) ![]u8 {
+    return formatLineOutput(allocator, raw, workspace_canon, output_mode, max_results);
 }
 
 fn formatGrepOutput(
@@ -585,6 +720,7 @@ fn formatLineOutput(
         if (i > 0) try output.append('\n');
         try output.appendSlice(line);
     }
+
     if (truncated) {
         try output.writer().print("\n\n[Results truncated: showing first {d} results]", .{max_results});
     }
@@ -677,15 +813,42 @@ fn truncateUtf8(input: []const u8, max_bytes: usize) []const u8 {
     return input[0..end];
 }
 
+fn detectExecutableInPath(allocator: std.mem.Allocator, executable: []const u8) bool {
+    const path_value = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
+    defer allocator.free(path_value);
+
+    const delimiter: u8 = if (builtin.os.tag == .windows) ';' else ':';
+    var parts = std.mem.splitScalar(u8, path_value, delimiter);
+    while (parts.next()) |part| {
+        const dir = if (part.len == 0) "." else part;
+        const candidate = std.fs.path.join(allocator, &.{ dir, executable }) catch return false;
+        defer allocator.free(candidate);
+        if (std.fs.path.isAbsolute(candidate)) {
+            std.fs.accessAbsolute(candidate, .{}) catch continue;
+        } else {
+            std.fs.cwd().access(candidate, .{}) catch continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 fn parseArgs(allocator: std.mem.Allocator, json: []const u8) !std.json.Parsed(std.json.Value) {
     return std.json.parseFromSlice(std.json.Value, allocator, json, .{});
 }
 
-fn expectExecute(json: []const u8, success: bool, output_substr: []const u8, error_substr: ?[]const u8) !void {
+fn expectExecute(
+    json: []const u8,
+    security: SecurityStub,
+    has_rg: bool,
+    success: bool,
+    output_substr: []const u8,
+    error_substr: ?[]const u8,
+) !void {
     var parsed = try parseArgs(std.testing.allocator, json);
     defer parsed.deinit();
 
-    var tool_impl = ContentSearchTool.init(std.testing.allocator);
+    var tool_impl = ContentSearchTool.initWithBackend(security, has_rg);
     defer tool_impl.deinit(std.testing.allocator);
 
     var result = try tool_impl.tool().execute(std.testing.allocator, parsed.value);
@@ -708,17 +871,71 @@ test "content_search searches content with grep backend" {
 
     const dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(dir);
-    var old_cwd = try std.fs.cwd().openDir(".", .{});
-    defer old_cwd.close();
-    try std.posix.chdir(dir);
-    defer std.posix.fchdir(old_cwd.fd) catch unreachable;
-
-    try expectExecute("{\"pattern\":\"needle\",\"path\":\".\"}", true, "notes.txt:2:needle", null);
+    try expectExecute(
+        "{\"pattern\":\"needle\",\"path\":\".\"}",
+        .{ .workspace_dir = dir },
+        false,
+        true,
+        "notes.txt:2:needle",
+        null,
+    );
 }
 
-test "content_search rejects grep multiline and empty pattern" {
-    try expectExecute("{\"pattern\":\"needle\",\"multiline\":true}", false, "", "Multiline matching requires ripgrep");
-    try expectExecute("{\"pattern\":\"\"}", false, "", "Empty pattern is not allowed.");
+test "content_search rejects security failures in Rust order" {
+    try expectExecute(
+        "{\"pattern\":\"\"}",
+        .{ .workspace_dir = "." },
+        false,
+        false,
+        "",
+        "Empty pattern is not allowed.",
+    );
+    try expectExecute(
+        "{\"pattern\":\"needle\"}",
+        .{ .workspace_dir = ".", .rate_limited = true },
+        false,
+        false,
+        "",
+        "Rate limit exceeded: too many actions in the last hour",
+    );
+    try expectExecute(
+        "{\"pattern\":\"needle\",\"path\":\"/etc\"}",
+        .{ .workspace_dir = "." },
+        false,
+        false,
+        "",
+        "Absolute paths are not allowed. Use a relative path.",
+    );
+    try expectExecute(
+        "{\"pattern\":\"needle\",\"path\":\"../../../etc\"}",
+        .{ .workspace_dir = "." },
+        false,
+        false,
+        "",
+        "Path traversal ('..') is not allowed.",
+    );
+}
+
+test "content_search rejects grep multiline and budget exhaustion" {
+    const cwd = try std.fs.cwd().realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(cwd);
+
+    try expectExecute(
+        "{\"pattern\":\"needle\",\"multiline\":true}",
+        .{ .workspace_dir = cwd },
+        false,
+        false,
+        "",
+        "Multiline matching requires ripgrep",
+    );
+    try expectExecute(
+        "{\"pattern\":\"needle\"}",
+        .{ .workspace_dir = ".", .action_budget = 0 },
+        false,
+        false,
+        "",
+        "Rate limit exceeded: action budget exhausted",
+    );
 }
 
 test "content_search parses grep output modes and relativizes paths" {
@@ -737,10 +954,14 @@ test "content_search parses grep output modes and relativizes paths" {
     try std.testing.expectEqualStrings("a.txt:2\n\nTotal: 2 matches in 1 files", counts);
 }
 
+test "content_search parses count paths with colons" {
+    const parsed = parseCountLine("dir:with:colon/file.rs:12").?;
+    try std.testing.expectEqualStrings("dir:with:colon/file.rs", parsed.path);
+    try std.testing.expectEqual(@as(usize, 12), parsed.count);
+}
+
 test "content_search truncates utf8 at character boundary" {
-    const text = "ab\xE2\x82\xACcd";
-    try std.testing.expectEqualStrings("ab", truncateUtf8(text, 4));
-    try std.testing.expectEqualStrings("ab\xE2\x82\xAC", truncateUtf8(text, 5));
+    try std.testing.expectEqualStrings("abc", truncateUtf8("abc你好", 4));
 }
 
 fn executeHappyOomImpl(allocator: std.mem.Allocator) !void {
@@ -750,14 +971,11 @@ fn executeHappyOomImpl(allocator: std.mem.Allocator) !void {
 
     const dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(dir);
-    var old_cwd = try std.fs.cwd().openDir(".", .{});
-    defer old_cwd.close();
-    try std.posix.chdir(dir);
-    defer std.posix.fchdir(old_cwd.fd) catch unreachable;
-
     var parsed = try parseArgs(std.testing.allocator, "{\"pattern\":\"needle\",\"path\":\".\"}");
     defer parsed.deinit();
-    var tool_impl = ContentSearchTool.init(allocator);
+
+    var tool_impl = ContentSearchTool.initWithBackend(.{ .workspace_dir = dir }, false);
+    tool_impl.mock_stdout = "oom.txt:1:needle\n";
     defer tool_impl.deinit(allocator);
     var result = try tool_impl.tool().execute(allocator, parsed.value);
     defer result.deinit(allocator);
@@ -765,9 +983,9 @@ fn executeHappyOomImpl(allocator: std.mem.Allocator) !void {
 }
 
 fn executeErrorOomImpl(allocator: std.mem.Allocator) !void {
-    var parsed = try parseArgs(std.testing.allocator, "{\"path\":\".\"}");
+    var parsed = try parseArgs(std.testing.allocator, "{\"pattern\":\"\"}");
     defer parsed.deinit();
-    var tool_impl = ContentSearchTool.init(allocator);
+    var tool_impl = ContentSearchTool.initWithBackend(.{ .workspace_dir = "." }, false);
     defer tool_impl.deinit(allocator);
     var result = try tool_impl.tool().execute(allocator, parsed.value);
     defer result.deinit(allocator);
@@ -776,7 +994,7 @@ fn executeErrorOomImpl(allocator: std.mem.Allocator) !void {
 }
 
 fn parametersSchemaOomImpl(allocator: std.mem.Allocator) !void {
-    var tool_impl = ContentSearchTool.init(allocator);
+    var tool_impl = ContentSearchTool.initWithBackend(.{ .workspace_dir = "." }, false);
     defer tool_impl.deinit(allocator);
     var value = try tool_impl.tool().parametersSchema(allocator);
     defer @import("../tool_call_parser/types.zig").freeJsonValue(allocator, &value);

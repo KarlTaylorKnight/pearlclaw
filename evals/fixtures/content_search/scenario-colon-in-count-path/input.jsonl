@@ -1,0 +1,1 @@
+{"op":"execute","tool":"content_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/dir:with:colon/file.rs","content":"target\nplain\n"}]},"args":{"pattern":"target","path":"dir:with:colon","output_mode":"count"}}

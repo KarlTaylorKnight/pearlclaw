@@ -31,8 +31,8 @@ impl ContentSearchTool {
         }
     }
 
-    #[cfg(test)]
-    fn new_with_backend(security: Arc<SecurityPolicy>, has_rg: bool) -> Self {
+    #[doc(hidden)]
+    pub fn new_with_backend(security: Arc<SecurityPolicy>, has_rg: bool) -> Self {
         Self { security, has_rg }
     }
 }

@@ -1,0 +1,1 @@
+{"op":"execute","result":{"error":"Invalid output_mode 'invalid_mode'. Allowed values: content, files_with_matches, count.","output":"","success":false},"tool":"content_search"}
