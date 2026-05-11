@@ -118,7 +118,12 @@ pub const MemoryPurgeTool = struct {
             if (!common.tagsContainAll(metadata.tags, tags)) continue;
 
             if (try self.memory_backend.forget(entry.key)) {
-                try self.memory_backend.deleteToolMetadata(entry.key);
+                // Tolerate a metadata-delete failure: the primary row is gone
+                // and an orphaned metadata row is harmless (queried by key only,
+                // returns empty tags on miss). A transient SQLite error here
+                // would otherwise abort the whole purge mid-batch. Mirrors the
+                // Rust eval runner's tolerance for the same failure mode.
+                self.memory_backend.deleteToolMetadata(entry.key) catch {};
                 deleted += 1;
             }
         }

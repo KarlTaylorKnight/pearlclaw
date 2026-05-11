@@ -255,3 +255,15 @@ fn formatEpochSeconds(allocator: std.mem.Allocator, seconds: u64) ![]u8 {
         },
     );
 }
+
+fn parametersSchemaOomImpl(allocator: std.mem.Allocator) !void {
+    const schema_json =
+        \\{"type":"object","properties":{"content":{"type":"string","description":"x"},"category":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["content"]}
+    ;
+    var value = try parametersSchema(allocator, schema_json);
+    defer parser_types.freeJsonValue(allocator, &value);
+}
+
+test "memory_common parametersSchema is OOM safe across nested schema parse + clone" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parametersSchemaOomImpl, .{});
+}

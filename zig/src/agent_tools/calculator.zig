@@ -712,6 +712,17 @@ test "calculator execute is OOM safe for success and error results" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, executeErrorOomImpl, .{});
 }
 
+fn parametersSchemaOomImpl(allocator: std.mem.Allocator) !void {
+    var calc = CalculatorTool.init(allocator);
+    defer calc.deinit(allocator);
+    var value = try calc.tool().parametersSchema(allocator);
+    defer parser_types.freeJsonValue(allocator, &value);
+}
+
+test "calculator parametersSchema is OOM safe" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parametersSchemaOomImpl, .{});
+}
+
 test "calculator formatNum matches pinned Rust-style edge cases" {
     const allocator = std.testing.allocator;
 
@@ -733,4 +744,8 @@ test "calculator formatNum matches pinned Rust-style edge cases" {
         "100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
         large,
     );
+
+    const small = try formatNum(allocator, 1.0 / 100_000_000.0);
+    defer allocator.free(small);
+    try std.testing.expectEqualStrings("0.00000001", small);
 }

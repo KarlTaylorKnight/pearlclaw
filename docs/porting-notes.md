@@ -1794,3 +1794,39 @@ Remaining risks:
 - Security policy parity is deferred.
 - `tags` and `source` are tool-layer metadata, not part of the core `MemoryEntry` type.
 - The production Rust memory tools are not yet on the same public surface as the Phase 7-B eval contract.
+
+## 2026-05-11 — Phase 7-B.1: bundled fixups from Phase 7-A and Phase 7-B second-pass reviews (Claude direct)
+
+Closes the carried-over should-fixes from the Phase 7-A review (never landed) and the new should-fixes from the Phase 7-B review (`8c6d53e`). Bundled into one commit because all four items are small and share the same scope (agent_tools OOM coverage + memory_purge robustness).
+
+### Source changes
+
+- `zig/src/agent_tools/calculator.zig` (after the existing `execute` OOM test) — added `parametersSchemaOomImpl` + `test "calculator parametersSchema is OOM safe"`. Closes the gap the Phase 7-A review flagged: `parametersSchema` parses ~1 KB of JSON and deep-clones the tree, the most allocation-intensive path in `calculator.zig`, previously uncovered by any `checkAllAllocationFailures` sweep.
+
+- `zig/src/agent_tools/calculator.zig` — extended the existing `test "calculator formatNum matches pinned Rust-style edge cases"` with an in-process pin for `1.0 / 100_000_000.0 → "0.00000001"`. The `scenario-small-number` eval fixture already exercised this externally, but an in-process pin catches a future Zig compiler regression on `{d}` formatting of sub-1e-4 values faster than the eval driver would.
+
+- `zig/src/agent_tools/memory_common.zig` (at end of file) — added `parametersSchemaOomImpl` + `test "memory_common parametersSchema is OOM safe across nested schema parse + clone"`. Closes Phase 7-B SF-2: the shared `parametersSchema(allocator, json)` helper is used by all 5 memory tools, and the OOM-sweep coverage that landed for `execute` paths in Phase 7-B did not extend to it. The sweep uses a non-trivial nested schema (object with properties + required + nested array-of-strings) to exercise the recursive parse + clone path.
+
+- `zig/src/agent_tools/memory_purge.zig:120-127` — replaced `try self.memory_backend.deleteToolMetadata(entry.key)` with `self.memory_backend.deleteToolMetadata(entry.key) catch {};`. Closes Phase 7-B SF-1: a transient SQLite error in the metadata-delete after `forget` succeeded would otherwise abort the entire purge batch, while the Rust eval runner is structurally tolerant of the same error. The fix makes the Zig path symmetric. Added a doc-comment explaining the orphaned-metadata-row is harmless (subsequent `getToolMetadata` for a missing key returns empty tags via the SQLITE_DONE branch).
+
+### Phase 7-B SF-3 — production-tool-surface divergence (documented here as accepted-for-now)
+
+The Rust production memory tools (`rust/crates/zeroclaw-tools/src/memory_{store,recall,forget,purge,export}.rs`) call `self.memory.store(key, content, category, None)` etc. — the older `key` / `namespace` / `session_id` surface. The Zig port and BOTH eval runners (Zig + Rust `eval-memory-tools.rs`) implement a newer surface (`content_hash`, `tags`, `source`, `importance`, `format`). The eval contract is byte-parity between the runners (the newer surface), not parity against the production Rust tools.
+
+This is intentional for the pilot: porting the Zig agent_tools to mirror the older Rust production tool surface would not exercise the features the LLM-facing JSON schema describes (tags, source, etc.). The newer surface is what an updated production tool layer would expose; the Zig port lands the target shape and the eval runners validate it.
+
+**Pending alignment work** (out of scope for this commit, recorded for a future phase):
+- Either port the newer surface back into the Rust production tools (so `cargo test -p zeroclaw-tools` exercises the same code paths the eval runners exercise), OR
+- Document this as the canonical pilot scope: production Rust tools are reference-only for trait shape and naming conventions; the eval contract is the parity surface.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `140/140` tests passed (was 138/138; +2 new OOM sweeps).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 226 fixtures OK, counts unchanged.
+
+### Skipped from queued work (not in 7-B.1 scope)
+
+- **Phase 6-B.1 SF-2** — `api/schema.zig` has duplicate `cloneJsonValue` / `freeJsonValue` / `emptyObject` / `putOwned` helpers using the old non-OOM-safe `put` patterns. This is pre-existing infrastructure, not introduced or touched by Phase 7-B, and deserves its own focused commit upgrading those helpers to the OOM-safe pattern that `tool_call_parser/types.zig` adopted in Phase 6-B.
+- **Phase 3-D.3** — `collapseWrappedMarker` Unicode whitespace gap in `multimodal.zig:243-246`. No fixture exercises it; kept deferred.
