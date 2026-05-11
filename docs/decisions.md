@@ -351,3 +351,89 @@ markdown / lucid backend stubs returning "not yet ported" errors, same
 shape as `purge_namespace`'s default.
 
 **Status:** accepted
+
+---
+
+## D17 — Memory tool surface: formalize Rust-production vs. Zig+eval divergence as canonical pilot scope
+
+**Date:** 2026-05-11
+**Decision:** Accept the existing divergence as canonical for the pilot
+phase. Production Rust memory tools
+(`rust/crates/zeroclaw-tools/src/memory_{store,recall,forget,purge,export}.rs`)
+keep the older `key` / `content` / `category` surface. The Zig port
+(`zig/src/agent_tools/memory_*.zig`) and both eval runners
+(Rust `eval-memory-tools.rs` and Zig `eval_memory_tools.zig`) keep the newer
+content-addressed surface with `tags` / `source` / `importance` / `format`.
+**The eval contract is byte-parity between the two runners — it is not parity
+against the production Rust tools.** Defer alignment until a concrete
+production-runtime need arises.
+
+**The divergence (concrete, as of 2026-05-11):**
+
+Rust `MemoryStoreTool.parameters_schema` (`memory_store.rs:31-50`):
+`{ "properties": { key, content, category }, "required": ["key","content"] }`.
+
+Zig `MemoryStoreTool.parametersSchema` (`memory_store.zig:14-29`) and both
+eval runners:
+`{ "properties": { category, content, importance, source, tags }, "required": ["content","category"] }`.
+
+Differences:
+1. **Identification model.** Rust uses caller-supplied `key`; Zig+eval is
+   content-addressed (SHA-256(content)[..8] hash, lowercase 16-char hex).
+2. **Metadata fields.** Zig+eval has `tags` / `source` / `importance`; Rust
+   has none.
+3. **Backing storage.** Zig SqliteMemory has a `memory_tool_metadata` side
+   table (Phase 7-B); Rust SqliteMemory does not. Tags and source have no
+   place to live on the Rust side without a backend migration.
+4. **Required fields.** Differ in list and semantics.
+5. **Return value text.** Rust: `"Stored memory: {key}"`. Zig:
+   `"Stored memory {hash} in category {category}"`.
+
+Equivalent deltas exist in `memory_recall`, `memory_forget`, `memory_purge`,
+`memory_export`. See Phase 7-B SF-3 framing in
+`docs/porting-notes.md:1812-1820`.
+
+**Why this and not "port newer surface back to Rust now":**
+
+D1 frames Rust as the reference implementation and the Zig binary as the
+port. Rewriting production Rust to match the port surface inverts that
+framing — it makes the port the reference and the existing Rust the
+port-of-the-port. That inversion is reasonable when the pilot concludes and
+the Zig port becomes canonical, but it is not the pilot's job.
+
+The eval contract is already the parity surface — every memory_tools fixture
+validates Rust↔Zig byte-equality on the newer surface (18/18 green at
+commit `8c6d53e`). The in-tree Rust production tests (1119 passing) validate
+the older surface against the older SqliteMemory backend. Both pass today.
+No fixture or test is broken by accepting the divergence; only documentation
+is unclear.
+
+**Tradeoff:**
+
+Production memory tools will not exercise the LLM-facing JSON schema features
+(tags, source, importance). If a future LLM agent flow on the Rust runtime
+side assumes those fields are honored by `MemoryStoreTool`, that assumption
+will break against the current production tools.
+
+**Trigger conditions for revisiting (flip to Option A — port newer surface
+back into Rust production tools):**
+
+Adopt Option A when **any** of these become true. These are advisory — no CI
+gate enforces them in this commit; the ADR is the contract.
+
+1. Production runtime code (outside `eval-*` binaries) calls
+   `MemoryStoreTool::execute` with a `tags` / `source` / `importance`
+   field. Detection: grep production Rust callers for these field names.
+2. `cargo test -p zeroclaw-tools` is expected to certify the LLM-facing
+   schema as a release gate.
+3. The pilot concludes per the project plan and the Zig port becomes the
+   canonical implementation. At that point Rust is the port-of-the-port and
+   naturally aligns to the Zig surface.
+
+**Related:**
+- D1 (parallel binaries, Rust = reference)
+- D9 (workforce + porting-notes audit trail)
+- Phase 7-B SF-3 framing in `docs/porting-notes.md:1812-1820` (this ADR
+  resolves that pending item)
+
+**Status:** accepted
