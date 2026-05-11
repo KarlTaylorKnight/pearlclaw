@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"a.txt\nb.txt\n\nTotal: 2 files","success":true},"tool":"glob_search"}

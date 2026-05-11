@@ -1,0 +1,1 @@
+{"op":"execute","result":{"error":"Refusing to write through symlink: /private/var/folders/_y/w2xkfxcd04946_q1vtfx99tw0000gn/T/zeroclaw-eval-<TMP>/link.txt","output":"","success":false},"tool":"file_write"}

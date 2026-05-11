@@ -1,0 +1,1 @@
+{"op":"execute","tool":"glob_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/Upper.TXT","content":""},{"path":"$TMP/lower.txt","content":""}]},"args":{"pattern":"$TMP/*.TXT"}}

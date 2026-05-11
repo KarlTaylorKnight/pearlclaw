@@ -1,0 +1,1 @@
+{"op":"execute","tool":"glob_search","setup":{"workspace":"$TMP/home","home":"$TMP/home","files":[{"path":"$TMP/home/glob/tilde.tilde","content":""},{"path":"$TMP/home/glob/other.txt","content":""}]},"args":{"pattern":"~/**/*.tilde"}}

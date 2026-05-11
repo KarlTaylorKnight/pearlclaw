@@ -1,0 +1,1 @@
+{"op":"execute","tool":"glob_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/file.txt","content":""},{"path":"$TMP/subdir/nested.txt","content":""}]},"args":{"pattern":"$TMP/*"}}

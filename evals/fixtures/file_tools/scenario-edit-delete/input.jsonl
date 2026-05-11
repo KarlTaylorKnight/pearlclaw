@@ -1,0 +1,1 @@
+{"op":"execute","tool":"file_edit","setup":{"workspace":"$TMP","files":[{"path":"$TMP/edit.txt","content":"keep remove keep"}]},"args":{"path":"$TMP/edit.txt","old_string":" remove","new_string":""}}

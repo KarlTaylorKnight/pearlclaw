@@ -1,0 +1,1 @@
+{"op":"execute","tool":"file_write","setup":{"workspace":"$TMP","files":[{"path":"$TMP/existing.txt","content":"old"}]},"args":{"path":"$TMP/existing.txt","content":"new"}}

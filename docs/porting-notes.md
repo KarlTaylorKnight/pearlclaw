@@ -1871,3 +1871,30 @@ Both `types.zig` and `schema.zig` versions of these helpers are OOM-safe; they j
 
 - **Phase 3-D.3** — `collapseWrappedMarker` Unicode whitespace gap in `multimodal.zig:243-246`. No fixture exercises it; kept deferred.
 - **Phase 7-B SF-3 alignment decision** — production Rust memory tools surface vs. eval-runner newer surface. Design decision, not implementation; awaits an explicit "port newer surface back to Rust" or "formalize divergence" call.
+
+## 2026-05-11 — Phase 7-C: file_edit + file_write + glob_search port (Codex first-pass)
+
+Ported the three filesystem tools into `zig/src/agent_tools/` with a shared `fs_common.zig` helper layer for JSON args, schema cloning, ToolResult construction, tilde expansion, target resolution, symlink checks, and Rust-style filesystem error text. Added `eval-file-tools` runners on both sides plus 19 fixtures under `evals/fixtures/file_tools`.
+
+Pinned decisions:
+
+1. **SecurityPolicy / tilde expansion** — chose option (b). Zig now expands `~` and `~/...` from `HOME` in `fs_common.expandTilde`; sandboxing and allowlist parity remain deferred until the SecurityPolicy port. The eval runner sets `HOME` for the tilde fixture.
+2. **Atomic write strategy** — Rust uses direct `tokio::fs::write` for both `file_write` and `file_edit`; there is no temp-file + rename path in the current source. Zig matches that direct-write behavior, with `file_write` creating parent directories first.
+3. **Glob feature set** — Zig implements `*`, `?`, `**`, and bracket classes, including simple negation/ranges. It does not implement brace expansion (`{a,b}`). Rust source currently exposes only the `pattern` parameter and a hard-coded 1000-result cap; the prompt's `base`, `max_results`, and `case_sensitive` fields are not present in Rust and were not added to Zig.
+4. **Symlink refusal mechanism** — Zig checks existing edit/write targets before writing with `std.posix.fstatat(std.fs.cwd().fd, path, std.posix.AT.SYMLINK_NOFOLLOW)` and rejects `.IFLNK` targets. This is Unix/macOS+Linux scoped, matching the pilot target and Rust's Unix symlink tests.
+5. **`old_string=""` semantics** — Rust explicitly returns `success:false` with `old_string must not be empty`; Zig matches and the fixture pins it.
+
+Notable source-parity corrections from the initial prompt: Rust `file_edit` does not support `replace_all`, `file_write` does not support `mode=create|overwrite` and always overwrites, and `glob_search` has no user-supplied max-results/case-sensitivity controls. Fixtures were written against the actual Rust source rather than those speculative fields.
+
+Verification:
+
+- `cd zig && zig build`
+- `cd zig && zig build test --summary all` — 151/151 passed
+- `cargo build --manifest-path eval-tools/Cargo.toml --release`
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-tools --release` — 1119 passed, 1 ignored doctest unchanged
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — 245/245 fixtures OK
+
+Remaining risks:
+
+- Zig filesystem tools intentionally lack Rust SecurityPolicy sandbox/allowlist parity beyond tilde expansion and symlink-target refusal.
+- Zig glob traversal is a small local matcher, not the Rust `glob` crate; it covers the pinned fixture surface but not every glob crate extension.

@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"root.rs\nsrc/deep/mod.rs\nsrc/lib.rs\n\nTotal: 3 files","success":true},"tool":"glob_search"}

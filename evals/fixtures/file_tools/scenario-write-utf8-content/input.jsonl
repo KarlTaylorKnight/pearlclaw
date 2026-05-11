@@ -1,0 +1,1 @@
+{"op":"execute","tool":"file_write","setup":{"workspace":"$TMP","files":[]},"args":{"path":"$TMP/utf8.txt","content":"caf\u00e9 \u4e2d"}}

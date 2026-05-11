@@ -13,7 +13,7 @@ Usage:
   python3 evals/driver/run_evals.py \\
       --rust eval-tools/target/release \\
       --zig zig/zig-out/bin \\
-      [--subsystem parser|memory|memory_tools|dispatcher|providers|oauth|schema|secrets|profiles|multimodal|provider_types|provider_secrets|provider_factory|agent_tools] \\
+      [--subsystem parser|memory|memory_tools|file_tools|dispatcher|providers|oauth|schema|secrets|profiles|multimodal|provider_types|provider_secrets|provider_factory|agent_tools] \\
       [--update-golden]   # only with --rust; rewrites *.expected.json from Rust output
 """
 
@@ -54,6 +54,15 @@ SUBSYSTEMS = {
         "zig_bin": "eval-memory-tools",
         "jsonl": True,
         "temp_paths": True,
+    },
+    "file_tools": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-file-tools",
+        "zig_bin": "eval-file-tools",
+        "jsonl": True,
+        "temp_paths": True,
+        "strip_tmp_ids": True,
     },
     "dispatcher": {
         "fixture_glob": "scenario-*/input.jsonl",
@@ -161,7 +170,10 @@ def normalize_memory_value(value, key: str | None = None):
     return value
 
 
-TMP_ID_RE = re.compile(r"zeroclaw-eval-[A-Za-z0-9_.:-]+-\d+-\d+")
+TMP_ID_RE = re.compile(
+    r"zeroclaw-eval-[A-Za-z0-9_.:-]+-(?:rust|zig)-[A-Za-z0-9_]+"
+    r"|zeroclaw-eval-[A-Za-z0-9_.:-]+-\d+-\d+"
+)
 
 
 def normalize_tmp_ids(value):

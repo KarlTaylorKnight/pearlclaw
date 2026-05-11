@@ -1,0 +1,1 @@
+{"op":"execute","tool":"glob_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/root.rs","content":""},{"path":"$TMP/src/lib.rs","content":""},{"path":"$TMP/src/deep/mod.rs","content":""},{"path":"$TMP/readme.md","content":""}]},"args":{"pattern":"$TMP/**/*.rs"}}

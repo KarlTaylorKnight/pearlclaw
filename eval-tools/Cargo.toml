@@ -60,6 +60,10 @@ path = "src/bin/eval-agent-tools.rs"
 name = "eval-memory-tools"
 path = "src/bin/eval-memory-tools.rs"
 
+[[bin]]
+name = "eval-file-tools"
+path = "src/bin/eval-file-tools.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
 zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }

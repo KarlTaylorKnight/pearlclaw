@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"No files matching pattern '/var/folders/_y/w2xkfxcd04946_q1vtfx99tw0000gn/T/zeroclaw-eval-<TMP>/*.missing' found in workspace.","success":true},"tool":"glob_search"}

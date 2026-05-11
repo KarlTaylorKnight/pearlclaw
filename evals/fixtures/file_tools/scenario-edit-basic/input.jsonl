@@ -1,0 +1,1 @@
+{"op":"execute","tool":"file_edit","setup":{"workspace":"$TMP","files":[{"path":"$TMP/edit.txt","content":"hello world"}]},"args":{"path":"$TMP/edit.txt","old_string":"hello","new_string":"goodbye"}}

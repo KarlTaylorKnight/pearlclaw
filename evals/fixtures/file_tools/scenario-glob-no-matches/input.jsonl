@@ -1,0 +1,1 @@
+{"op":"execute","tool":"glob_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/a.txt","content":""}]},"args":{"pattern":"$TMP/*.missing"}}
