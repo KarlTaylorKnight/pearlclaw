@@ -52,6 +52,10 @@ path = "src/bin/eval-provider-secrets.rs"
 name = "eval-provider-factory"
 path = "src/bin/eval-provider-factory.rs"
 
+[[bin]]
+name = "eval-agent-tools"
+path = "src/bin/eval-agent-tools.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
 zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }
@@ -59,6 +63,7 @@ zeroclaw-tool-call-parser = { path = "../rust/crates/zeroclaw-tool-call-parser" 
 zeroclaw-memory = { path = "../rust/crates/zeroclaw-memory" }
 zeroclaw-providers = { path = "../rust/crates/zeroclaw-providers" }
 zeroclaw-runtime = { path = "../rust/crates/zeroclaw-runtime" }
+zeroclaw-tools = { path = "../rust/crates/zeroclaw-tools", default-features = false }
 anyhow = "1.0"
 base64 = "0.22"
 serde_json = "1.0"

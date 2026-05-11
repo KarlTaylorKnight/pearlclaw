@@ -15,6 +15,7 @@
 //! ToolDispatcher.
 
 const std = @import("std");
+const parser_types = @import("../tool_call_parser/types.zig");
 const types = @import("types.zig");
 
 pub const BASELINE_TEMPERATURE: f64 = 0.7;
@@ -54,12 +55,20 @@ pub const ProviderCapabilities = Capabilities;
 /// these into its native form (OpenAI `NativeToolSpec`, Ollama
 /// `{"type":"function","function":{...}}` JSON).
 ///
-/// Lifetime: `name`, `description`, and `parameters` borrow from the
-/// caller; `convertTools` deep-copies them into provider-owned form.
+/// Lifetime: most provider call paths pass borrowed fields and let
+/// `convertTools` deep-copy them into provider-owned form. Specs returned by
+/// `agent_tools.Tool.spec` are owned and should be released with `deinit`.
 pub const ToolSpec = struct {
     name: []const u8,
     description: []const u8,
     parameters: std.json.Value,
+
+    pub fn deinit(self: *ToolSpec, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.description);
+        parser_types.freeJsonValue(allocator, &self.parameters);
+        self.* = undefined;
+    }
 };
 
 /// Polymorphic chat-request envelope used by `Provider.chat`. Mirrors the

@@ -1,0 +1,1 @@
+{"function":"log-zero","op":"execute","result":{"error":"Logarithm requires a positive number","output":"","success":false}}

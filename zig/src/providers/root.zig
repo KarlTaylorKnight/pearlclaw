@@ -29,6 +29,7 @@ pub const StreamOptions = provider.StreamOptions;
 pub const StreamError = provider.StreamError;
 pub const ProviderCapabilityError = provider.ProviderCapabilityError;
 pub const ToolsPayload = provider.ToolsPayload;
+pub const ToolSpec = provider.ToolSpec;
 pub const buildToolInstructionsText = provider.buildToolInstructionsText;
 
 test {

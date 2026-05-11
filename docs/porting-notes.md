@@ -1715,3 +1715,38 @@ The second-pass reviewer reported two "must-fix" items at high confidence; both 
 - `cd zig && zig build test --summary all` — `121/121` tests passed (was 120/120; +1 Ollama OOM sweep).
 - `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 174 fixtures OK, counts unchanged.
+
+## 2026-05-11 — Phase 7-A: Tool trait scaffold + CalculatorTool port (Codex first-pass)
+
+Lands the first `zeroclaw-tools` Zig surface under `zig/src/agent_tools/`: a sync-first `Tool` vtable scaffold plus the pure-compute `CalculatorTool` proof of concept. The older `zig/src/tools/` namespace remains reserved for eval binaries.
+
+### Source changes
+
+- `zig/src/agent_tools/tool.zig` — added `ToolResult`, `Tool`, vtable dispatch shims, and `Tool.spec`. `ToolResult.error_msg` is the Zig spelling for Rust's serialized `error` field. `Tool.spec` returns an owned provider-compatible `ToolSpec`.
+- `zig/src/providers/provider.zig` — kept `ToolSpec` as the canonical shape because it matches `zeroclaw_api::tool::ToolSpec` exactly (`name`, `description`, `parameters`). Added `ToolSpec.deinit` for owned specs returned by `agent_tools.Tool.spec`; borrowed provider-call specs remain valid as long as callers do not deinit borrowed values.
+- `zig/src/agent_tools/calculator.zig` — ported all 25 Rust calculator functions, including arithmetic, log/exp, aggregation, statistics, percentile, percentage change, clamp, Rust-compatible mode tie ordering, and Rust-compatible error messages.
+- `zig/src/tools/eval_agent_tools.zig` and `eval-tools/src/bin/eval-agent-tools.rs` — added byte-parity eval runners for calculator execution. The normal path executes a parsed JSON args value; `execute_raw` exists only to fixture non-finite/out-of-range JSON numbers, because Rust rejects them at `serde_json` parse time before `CalculatorTool.execute`.
+- `evals/fixtures/agent_tools/` — added 34 Rust-generated fixtures covering happy paths, math errors, argument errors, numeric formatting edges, mode ties, negative zero, very small/large finite numbers, and raw non-finite parse failure.
+
+### Pinned decisions
+
+- **ToolSpec shape:** `zeroclaw-api/src/tool.rs:14` and the already-ported provider `ToolSpec` are field-identical. `agent_tools/tool.zig` re-exports `providers.ToolSpec` rather than duplicating the DTO.
+- **Numeric formatting:** Rust's helper first prints integral finite values with `abs < 1e15` as integers, then falls through to Rust `Display` for `f64`. The evals showed that `1e154 * 1e154` prints as a full decimal string and `1 / 100000000` prints `0.00000001`; the Zig helper therefore uses decimal formatting for finite non-integer fallthroughs rather than scientific formatting. Negative zero normalizes to `"0"`.
+- **Async deviation:** Rust's trait is async, but the Zig scaffold is deliberately synchronous until libxev lands. This is documented at the top of `agent_tools/tool.zig`; future I/O-heavy tools should not infer a final async design from this pilot vtable.
+- **Argument extraction:** `calculator.zig` uses a small `JsonArgs` helper rather than inlining `std.json.Value` walking across 25 functions. It mirrors Rust's `as_f64`, `as_i64`, and `as_array` behavior, including scalar wrong-type messages and `values[i] is not a valid number`.
+- **Mode ties:** Rust counts by `f64::to_bits`, then emits modes in first-seen input order. A tie formats as `Modes: 2, 3`, not a JSON array and not sorted order.
+- **Non-finite inputs:** JSON `NaN`/`Inf` are not valid; `1e309` is rejected by Rust's `serde_json` as `number out of range`. The eval fixture records that as a deterministic `"Invalid args JSON"` failure at runner parse boundary. Zig's raw runner explicitly rejects out-of-range `number_string` values to match that boundary.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `127/127` tests passed (was 121/121; +6 agent_tools tests including success/error OOM sweeps).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-tools --release` — `1119` unit tests passed; doctest target ran with `1` ignored doctest.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin --subsystem agent_tools` — `34/34` new agent_tools fixtures OK.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all `208` fixtures OK (`174` existing + `34` new agent_tools).
+
+### Remaining risks
+
+- The sync-first vtable is intentionally insufficient for future I/O-heavy tools such as `web_fetch`, MCP, browser, and memory recall. Do not design around blocking async I/O in this commit.
+- `ToolSpec.deinit` is only correct for owned specs. Existing provider paths that pass borrowed specs should keep treating them as borrowed.

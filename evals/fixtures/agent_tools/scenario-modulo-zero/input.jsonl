@@ -1,0 +1,1 @@
+{"op":"execute","function":"modulo-zero","args":{"function":"modulo","a":10,"b":0}}

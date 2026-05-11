@@ -16,6 +16,7 @@ pub const tool_call_parser = @import("tool_call_parser/root.zig");
 pub const memory = @import("memory/root.zig");
 pub const runtime = @import("runtime/root.zig");
 pub const providers = @import("providers/root.zig");
+pub const agent_tools = @import("agent_tools/root.zig");
 pub const api = @import("api/root.zig");
 pub const auth_service = providers.auth.service;
 

@@ -1,0 +1,1 @@
+{"function":"sqrt-negative","op":"execute","result":{"error":"Cannot compute square root of a negative number","output":"","success":false}}
