@@ -1,0 +1,1 @@
+{"op":"execute","tool":"content_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/regex.txt","content":"alpha1\nbeta2\ngamma3\nalphaX\n"}]},"args":{"pattern":"^(alpha|beta)[[:digit:]]$","path":"."}}

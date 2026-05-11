@@ -1,0 +1,1 @@
+{"op":"execute","result":{"error":"Multiline matching requires ripgrep (rg), which is not available.","output":"","success":false},"tool":"content_search"}

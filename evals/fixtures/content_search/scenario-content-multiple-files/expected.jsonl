@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"c.md:1:target three\nb.txt:2:target two\na.txt:1:target one\n\nTotal: 3 matching lines in 3 files","success":true},"tool":"content_search"}

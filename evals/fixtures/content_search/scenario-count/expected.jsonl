@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"b.txt:1\na.txt:2\n\nTotal: 3 matches in 2 files","success":true},"tool":"content_search"}

@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"regex.txt:1:alpha1\nregex.txt:2:beta2\n\nTotal: 2 matching lines in 1 files","success":true},"tool":"content_search"}

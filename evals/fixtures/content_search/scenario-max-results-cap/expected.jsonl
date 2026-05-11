@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"cap.txt:1:hit one\ncap.txt:2:hit two\n\n[Results truncated: showing first 2 results]\n\nTotal: 2 matching lines in 1 files","success":true},"tool":"content_search"}

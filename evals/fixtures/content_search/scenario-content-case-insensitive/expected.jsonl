@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"case.txt:1:Needle\ncase.txt:2:NEEDLE\n\nTotal: 2 matching lines in 1 files","success":true},"tool":"content_search"}

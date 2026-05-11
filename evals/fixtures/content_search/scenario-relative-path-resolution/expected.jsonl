@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"sub/nested.txt:1:target nested\n\nTotal: 1 matching lines in 1 files","success":true},"tool":"content_search"}

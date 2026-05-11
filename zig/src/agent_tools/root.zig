@@ -8,6 +8,7 @@ pub const memory_export = @import("memory_export.zig");
 pub const file_write = @import("file_write.zig");
 pub const file_edit = @import("file_edit.zig");
 pub const glob_search = @import("glob_search.zig");
+pub const content_search = @import("content_search.zig");
 
 pub const Tool = tool.Tool;
 pub const ToolResult = tool.ToolResult;
@@ -21,6 +22,7 @@ pub const MemoryExportTool = memory_export.MemoryExportTool;
 pub const FileWriteTool = file_write.FileWriteTool;
 pub const FileEditTool = file_edit.FileEditTool;
 pub const GlobSearchTool = glob_search.GlobSearchTool;
+pub const ContentSearchTool = content_search.ContentSearchTool;
 
 test {
     @import("std").testing.refAllDecls(@This());

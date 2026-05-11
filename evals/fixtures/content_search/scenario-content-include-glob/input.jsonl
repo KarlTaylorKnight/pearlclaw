@@ -1,0 +1,1 @@
+{"op":"execute","tool":"content_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/keep.txt","content":"target text\n"},{"path":"$TMP/skip.rs","content":"target rust\n"}]},"args":{"pattern":"target","path":".","include":"*.txt"}}

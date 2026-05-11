@@ -1,0 +1,1 @@
+{"op":"execute","tool":"content_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/root.txt","content":"target root\n"},{"path":"$TMP/sub/nested.txt","content":"target nested\n"}]},"args":{"pattern":"target","path":"sub"}}

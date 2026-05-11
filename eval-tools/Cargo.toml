@@ -64,6 +64,10 @@ path = "src/bin/eval-memory-tools.rs"
 name = "eval-file-tools"
 path = "src/bin/eval-file-tools.rs"
 
+[[bin]]
+name = "eval-content-search"
+path = "src/bin/eval-content-search.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
 zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }

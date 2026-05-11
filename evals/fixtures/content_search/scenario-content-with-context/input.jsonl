@@ -1,0 +1,1 @@
+{"op":"execute","tool":"content_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/context.txt","content":"one\ntwo\nthree\nneedle\nfive\nsix\n"}]},"args":{"pattern":"needle","path":".","context_before":2,"context_after":1}}

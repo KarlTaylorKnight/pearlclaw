@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"notes.txt:2:needle\n\nTotal: 1 matching lines in 1 files","success":true},"tool":"content_search"}

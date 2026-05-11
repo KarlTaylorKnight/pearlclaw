@@ -1,0 +1,1 @@
+{"op":"execute","tool":"content_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/case.txt","content":"Needle\nNEEDLE\nhay\n"}]},"args":{"pattern":"needle","path":".","case_sensitive":false}}

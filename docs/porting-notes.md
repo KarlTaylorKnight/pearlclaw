@@ -1928,3 +1928,31 @@ The Rust eval runner (`eval-file-tools.rs:34-41`) does NOT call `chdir`; the Zig
 - `cd zig && zig build` — clean.
 - `cd zig && zig build test --summary all` — `151/151` tests passed, unchanged (the two new parametersSchema sweeps were added inside existing test blocks, matching the `file_write.zig` pattern).
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 245 fixtures OK, counts unchanged.
+
+## 2026-05-11 — Phase 7-D: content_search port (Codex first-pass)
+
+Phase 7-D ports `content_search` as a grep-only member of the filesystem tool family. The Zig tool lives at `zig/src/agent_tools/content_search.zig`, is exported through `agent_tools/root.zig`, and is covered by the new `content_search` eval subsystem. The Rust eval runner is forced onto the same grep backend so fixture output is deterministic with respect to backend choice and does not depend on whether `rg` is installed on a developer machine.
+
+Pinned decisions:
+
+- Rust eval-runner backend selection: added `ContentSearchTool::with_grep_only(security)` as a minimal public additive constructor in `rust/crates/zeroclaw-tools/src/content_search.rs`. The new eval runner calls that constructor, leaving `new()` and the existing `#[cfg(test)] new_with_backend(...)` behavior untouched.
+- Zig backend scope: implemented only the Rust grep fallback path. The rg-specific `build_rg_command` and `format_rg_output` branches remain out of scope for the pilot.
+- SecurityPolicy parity: still deferred. Zig expands `~` through `fs_common.expandTilde`, canonicalizes the requested path, canonicalizes the current working directory as the eval workspace, and rejects paths outside that workspace by realpath prefix check. Full `zeroclaw-config` policy behavior remains future work.
+- Subprocess timeout: Zig uses `std.process.Child`, reads stdout/stderr pipes through `std.posix.poll` at 100 ms intervals, checks completion with `std.posix.waitpid(pid, W.NOHANG)`, sends SIGTERM at 30 seconds, then SIGKILL after a 1 second grace period. Raw capture is bounded at 2 MB to avoid runaway output growth; final formatted output still uses Rust's 1 MB UTF-8-boundary truncation marker.
+- Grep argument construction mirrors Rust's `build_grep_command`: `grep -r -n -E --binary-files=without-match`, plus `-l` for `files_with_matches`, `-c` for `count`, `-B N`/`-A N` only for content context, `-i` when `case_sensitive=false`, `--include PATTERN`, then `--`, `pattern`, and the canonical search path.
+- Output modes mirror Rust's grep formatter: content counts matching `path:line:` rows only, context rows use `path-line-`, `files_with_matches` dedupes paths, and `count` filters zero-count rows while summing positive counts.
+- Regex flavor is POSIX ERE through `grep -E`. Fixtures exercise alternation, character classes, and anchors without adding a separate Zig regex engine.
+- Output truncation fixture was skipped. The UTF-8 truncation helper is unit-tested in Zig, but a portable 1 MB grep-output fixture would be large and noisy for this eval set.
+
+Fixtures:
+
+- Added 14 `content_search` eval fixtures: basic content search, no matches, multiple files, case-insensitive search, context, include glob, files-with-matches, count, max-results cap, POSIX ERE special chars, multiline grep error, missing pattern, empty pattern, and relative path resolution.
+- The Rust runner catches `execute()` errors and serializes them as failed tool results so the missing-pattern fixture can pin Rust's `Missing 'pattern' parameter` behavior instead of aborting the runner.
+
+Verification:
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `156/156` tests passed.
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-tools --release` — `1119` tests passed, `1` doctest ignored unchanged.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all `259` fixtures OK (`245` existing + `14` new content_search fixtures).

@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"context.txt-2-two\ncontext.txt-3-three\ncontext.txt:4:needle\ncontext.txt-5-five\n\nTotal: 1 matching lines in 1 files","success":true},"tool":"content_search"}

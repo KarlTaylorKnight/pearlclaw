@@ -1,0 +1,1 @@
+{"op":"execute","tool":"content_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/cap.txt","content":"hit one\nhit two\nhit three\nhit four\n"}]},"args":{"pattern":"hit","path":".","max_results":2}}

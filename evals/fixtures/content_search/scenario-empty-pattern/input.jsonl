@@ -1,0 +1,1 @@
+{"op":"execute","tool":"content_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/notes.txt","content":"needle\n"}]},"args":{"pattern":"","path":"."}}

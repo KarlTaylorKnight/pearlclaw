@@ -1,0 +1,1 @@
+{"op":"execute","tool":"content_search","setup":{"workspace":"$TMP","files":[{"path":"$TMP/a.txt","content":"target one\ntarget two\n"},{"path":"$TMP/b.txt","content":"plain\ntarget three\n"},{"path":"$TMP/c.txt","content":"plain\n"}]},"args":{"pattern":"target","path":".","output_mode":"count"}}
