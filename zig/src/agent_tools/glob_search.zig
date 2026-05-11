@@ -297,6 +297,12 @@ fn matchGlob(pattern: []const u8, text: []const u8) !bool {
     }
 
     if (std.mem.startsWith(u8, pattern, "**")) {
+        // Bare `**` (not followed by `/`) matches zero-or-more bytes including
+        // path separators. Distinct from the `**/` arm above, which iterates
+        // per-segment. Correct for trailing-`**` patterns like `src/**`
+        // meaning "anything under src" — current fixtures all use `**/...`
+        // so this branch isn't exercised, but it preserves Rust glob-crate
+        // parity for bare-`**` patterns.
         if (try matchGlob(pattern[2..], text)) return true;
         var i: usize = 0;
         while (i < text.len) : (i += 1) {
@@ -423,7 +429,15 @@ fn executeErrorOomImpl(allocator: std.mem.Allocator) !void {
     try std.testing.expect(result.error_msg != null);
 }
 
-test "glob_search execute is OOM safe for success and validation errors" {
+fn parametersSchemaOomImpl(allocator: std.mem.Allocator) !void {
+    var tool_impl = GlobSearchTool.init(allocator);
+    defer tool_impl.deinit(allocator);
+    var value = try tool_impl.tool().parametersSchema(allocator);
+    defer @import("../tool_call_parser/types.zig").freeJsonValue(allocator, &value);
+}
+
+test "glob_search execute and parametersSchema are OOM safe" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, executeHappyOomImpl, .{});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, executeErrorOomImpl, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parametersSchemaOomImpl, .{});
 }

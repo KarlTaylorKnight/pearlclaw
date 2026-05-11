@@ -1898,3 +1898,33 @@ Remaining risks:
 
 - Zig filesystem tools intentionally lack Rust SecurityPolicy sandbox/allowlist parity beyond tilde expansion and symlink-target refusal.
 - Zig glob traversal is a small local matcher, not the Rust `glob` crate; it covers the pinned fixture surface but not every glob crate extension.
+
+## 2026-05-11 — Phase 7-C.1: Phase 7-C second-pass review fixups (Claude direct)
+
+Closes the two real should-fixes from the Phase 7-C (`58aef64`) review. The review surfaced no must-fixes — Codex's port was substantively clean (schema parity, symlink refusal, atomic-write strategy, `old_string=""` semantics, and tilde-expansion all verified byte-parity against the Rust source line-by-line).
+
+### Source changes
+
+- `zig/src/agent_tools/file_edit.zig` — added `parametersSchemaOomImpl` and extended the existing `test "file_edit execute is OOM safe..."` to include a third `checkAllAllocationFailures` sweep. The test name now reads "file_edit execute and parametersSchema are OOM safe". Brings file_edit to the same three-sweep coverage (happy + validation-error + parametersSchema) that `file_write.zig:192-203` established in Phase 7-C.
+
+- `zig/src/agent_tools/glob_search.zig` — same pattern: added `parametersSchemaOomImpl` and extended the existing OOM test to include the parametersSchema sweep.
+
+- `zig/src/agent_tools/glob_search.zig:299-306` — added a doc comment on the bare-`**` branch of `matchGlob` explaining its zero-or-more-bytes-including-separators semantics. The branch isn't exercised by any current fixture (all glob fixtures use `**/...` form), but it preserves Rust `glob` crate parity for trailing-`**` patterns like `src/**`. Closes nit N-2 from the review.
+
+### SF-2 — absolute-paths-only convention for file_tools integration fixtures
+
+The Rust eval runner (`eval-file-tools.rs:34-41`) does NOT call `chdir`; the Zig eval runner (`eval_file_tools.zig:39-41`) DOES. For the current 19 fixtures the asymmetry is invisible because all fixture patterns use absolute `$TMP/...` paths or tilde-prefixed `~/...` paths. A future fixture using a relative pattern (e.g. `*.txt` without `$TMP/` prefix) would resolve differently between the runners.
+
+**Convention recorded:** all file_tools integration fixture patterns and paths MUST be absolute (`$TMP/...` after driver substitution) or tilde-prefixed. Relative patterns are reserved for in-process unit tests inside `glob_search.zig`, which set their own `chdir` explicitly. Future fixture authors: do not use bare relative patterns.
+
+### Skipped from queued nits
+
+- **N-1** — `fixedDirectoryPrefix` has a vestigial `last_slash_before_glob` variable in `glob_search.zig`. Pure cleanup, no behavior change. Touching the glob matcher's internal scan logic beyond the OOM tests adds risk for no real gain; left as-is.
+- **N-3** — `~user/foo` tilde expansion not supported. Explicitly matches Rust's `SecurityPolicy::resolve_tool_path` scope. No action needed.
+- **S-1 (downgraded by reviewer)** — bare-`**` branch in `matchGlob` was initially flagged as should-fix but downgraded to a documentation nit on closer inspection. Addressed by the doc comment in this commit.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `151/151` tests passed, unchanged (the two new parametersSchema sweeps were added inside existing test blocks, matching the `file_write.zig` pattern).
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 245 fixtures OK, counts unchanged.
