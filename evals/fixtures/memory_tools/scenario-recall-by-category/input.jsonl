@@ -1,0 +1,1 @@
+{"op":"execute","tool":"memory_recall","setup":{"db_path":"$TMP/memory.db","entries":[{"content":"Core preference","category":"core","tags":["profile"],"created_at":"2026-05-01T00:00:00Z"},{"content":"Project decision","category":"project","tags":["decision"],"created_at":"2026-05-03T00:00:00Z"}]},"args":{"category":"project","limit":5}}

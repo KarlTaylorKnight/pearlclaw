@@ -1,0 +1,1 @@
+{"op":"execute","tool":"memory_recall","setup":{"db_path":"$TMP/memory.db","entries":[{"content":"Tagged urgent note","category":"project","tags":["urgent","zig"],"created_at":"2026-05-04T00:00:00Z"},{"content":"Plain note","category":"project","tags":["later"],"created_at":"2026-05-03T00:00:00Z"}]},"args":{"tags":["urgent"],"limit":5}}

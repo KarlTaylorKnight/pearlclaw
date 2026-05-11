@@ -1,0 +1,1 @@
+{"op":"execute","tool":"memory_export","setup":{"db_path":"$TMP/memory.db","entries":[]},"args":{"format":"json","category":"project"}}

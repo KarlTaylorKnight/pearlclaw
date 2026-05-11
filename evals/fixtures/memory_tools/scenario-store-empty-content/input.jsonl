@@ -1,0 +1,1 @@
+{"op":"execute","tool":"memory_store","setup":{"db_path":"$TMP/memory.db","entries":[]},"args":{"content":"","category":"project"}}

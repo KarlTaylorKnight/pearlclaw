@@ -1,0 +1,1 @@
+{"op":"execute","tool":"memory_recall","setup":{"db_path":"$TMP/memory.db","entries":[{"content":"Only stored note","category":"project","tags":["zig"],"created_at":"2026-05-01T00:00:00Z"}]},"args":{"query":"absent","limit":5}}

@@ -76,6 +76,31 @@ impl SqliteMemory {
         })
     }
 
+    /// Like `new`, but stores data at an exact SQLite file path.
+    pub fn new_at_path(db_path: &Path) -> anyhow::Result<Self> {
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Self::open_connection(db_path, None)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous  = NORMAL;
+             PRAGMA mmap_size    = 8388608;
+             PRAGMA cache_size   = -2000;
+             PRAGMA temp_store   = MEMORY;",
+        )?;
+        Self::init_schema(&conn)?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            db_path: db_path.to_path_buf(),
+            embedder: Arc::new(super::embeddings::NoopEmbedding),
+            vector_weight: 0.7,
+            keyword_weight: 0.3,
+            cache_max: 10_000,
+            search_mode: SearchMode::default(),
+        })
+    }
+
     /// Build SQLite memory with optional open timeout.
     ///
     /// If `open_timeout_secs` is `Some(n)`, opening the database is limited to `n` seconds
@@ -257,7 +282,7 @@ impl SqliteMemory {
     /// Deterministic content hash for embedding cache.
     /// Uses SHA-256 (truncated) instead of DefaultHasher, which is
     /// explicitly documented as unstable across Rust versions.
-    fn content_hash(text: &str) -> String {
+    pub fn content_hash(text: &str) -> String {
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(text.as_bytes());
         // First 8 bytes → 16 hex chars, matching previous format length

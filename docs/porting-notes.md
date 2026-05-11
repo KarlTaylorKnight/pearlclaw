@@ -1750,3 +1750,47 @@ Lands the first `zeroclaw-tools` Zig surface under `zig/src/agent_tools/`: a syn
 
 - The sync-first vtable is intentionally insufficient for future I/O-heavy tools such as `web_fetch`, MCP, browser, and memory recall. Do not design around blocking async I/O in this commit.
 - `ToolSpec.deinit` is only correct for owned specs. Existing provider paths that pass borrowed specs should keep treating them as borrowed.
+
+## 2026-05-11 — Phase 7-B: memory tools port (Codex first-pass)
+
+Ported the five memory tools into `zig/src/agent_tools/` on the Phase 7-A sync vtable:
+
+- `MemoryStoreTool`
+- `MemoryRecallTool`
+- `MemoryForgetTool`
+- `MemoryPurgeTool`
+- `MemoryExportTool`
+
+The tools all borrow `*SqliteMemory`; `deinit` is a no-op for the backend. The caller remains responsible for backend lifetime in both eval and future runtime usage.
+
+Implementation notes:
+
+- Added a small `memory_tool_metadata` side table for tool-only `tags` and `source`. This avoids changing the existing `MemoryEntry` ABI and keeps the older raw `memory` fixtures stable.
+- Added exact-path SQLite constructors (`SqliteMemory.newAtPath` / Rust `SqliteMemory::new_at_path`) so the `memory_tools` eval setup can use `$TMP/memory.db` literally.
+- Added eval timestamp pinning via `setEntryTimestampForEval` for fixtures. The current Zig and Rust SQLite memory implementations did not expose general clock injection; setup entries use fixed `created_at` values instead.
+- `content_hash` matches the existing backend format: SHA-256 first 8 bytes, lowercase 16-character hex. The prompt said “SHA-256 hex”; the actual Rust/Zig memory backends use the truncated stable shape.
+- Parameter schemas follow the calculator pattern: parse a JSON literal at runtime, then clone the parsed tree with `parser_types.cloneJsonValue`.
+- SecurityPolicy was intentionally skipped for this pilot. Rust’s current tool implementations still enforce it, but Zig has no equivalent infra yet; this commit documents the deviation rather than adding a stub.
+
+Rust-source deviation:
+
+- The local Rust `zeroclaw-tools/src/memory_*.rs` files are still the older `key` / `namespace` / `session_id` surface. The Phase 7-B prompt requested the newer `content_hash` / `tags` / `source` / `format` eval contract. I left the Rust production tools unchanged to avoid rewriting their existing 1119-test surface, and implemented `eval-memory-tools` as a parity runner over the shared Memory backend for the requested contract.
+
+Eval coverage:
+
+- Added `memory_tools` to `evals/driver/run_evals.py`.
+- Added 18 fixtures: store basic/tags/duplicate, recall query/category/tags/empty/limit, forget existing/missing, purge category/no-confirm/age, export JSON/markdown/empty, and store validation errors.
+
+Verification:
+
+- `cd zig && zig build` — clean
+- `cd zig && zig build test --summary all` — 138/138 tests passed
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-tools --release` — 1119 passed + 1 ignored doctest
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all fixtures OK, including 18/18 `memory_tools`
+
+Remaining risks:
+
+- Security policy parity is deferred.
+- `tags` and `source` are tool-layer metadata, not part of the core `MemoryEntry` type.
+- The production Rust memory tools are not yet on the same public surface as the Phase 7-B eval contract.

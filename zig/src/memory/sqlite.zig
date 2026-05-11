@@ -15,6 +15,18 @@ const EntryColumns =
     "id, key, content, category, created_at, session_id, namespace, importance, superseded_by";
 const DefaultListLimit: i64 = 1000;
 
+pub const MemoryToolMetadata = struct {
+    tags: [][]u8,
+    source: ?[]u8,
+
+    pub fn deinit(self: *MemoryToolMetadata, allocator: std.mem.Allocator) void {
+        for (self.tags) |tag| allocator.free(tag);
+        allocator.free(self.tags);
+        if (self.source) |source| allocator.free(source);
+        self.* = undefined;
+    }
+};
+
 const ScoredId = struct {
     id: []u8,
     score: f64,
@@ -63,6 +75,41 @@ pub const SqliteMemory = struct {
             .allocator = allocator,
             .db = db_opt.?,
             .db_path = db_path,
+            .stmt_cache = std.StringHashMap(*c.sqlite3_stmt).init(allocator),
+        };
+        errdefer self.deinit();
+
+        try self.execBatch(
+            \\PRAGMA journal_mode = WAL;
+            \\PRAGMA synchronous  = NORMAL;
+            \\PRAGMA mmap_size    = 8388608;
+            \\PRAGMA cache_size   = -2000;
+            \\PRAGMA temp_store   = MEMORY;
+        );
+        try self.initSchema();
+        return self;
+    }
+
+    pub fn newAtPath(allocator: std.mem.Allocator, db_path: []const u8) !SqliteMemory {
+        const dir = std.fs.path.dirname(db_path);
+        if (dir) |parent| try std.fs.cwd().makePath(parent);
+
+        const db_path_owned = try allocator.dupe(u8, db_path);
+        errdefer allocator.free(db_path_owned);
+
+        var db_opt: ?*c.sqlite3 = null;
+        const path_z = try allocator.dupeZ(u8, db_path_owned);
+        defer allocator.free(path_z);
+        const flags = c.SQLITE_OPEN_READWRITE | c.SQLITE_OPEN_CREATE | c.SQLITE_OPEN_FULLMUTEX;
+        if (c.sqlite3_open_v2(path_z.ptr, &db_opt, flags, null) != c.SQLITE_OK) {
+            if (db_opt) |db| _ = c.sqlite3_close(db);
+            return MemoryError.Sqlite;
+        }
+
+        var self = SqliteMemory{
+            .allocator = allocator,
+            .db = db_opt.?,
+            .db_path = db_path_owned,
             .stmt_cache = std.StringHashMap(*c.sqlite3_stmt).init(allocator),
         };
         errdefer self.deinit();
@@ -402,6 +449,97 @@ pub const SqliteMemory = struct {
         return results.toOwnedSlice();
     }
 
+    pub fn setToolMetadata(
+        self: *SqliteMemory,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        tags: []const []const u8,
+        source: ?[]const u8,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        try self.initToolMetadataSchema();
+
+        const tags_json = try encodeTagsJson(allocator, tags);
+        defer allocator.free(tags_json);
+
+        const stmt = try self.cachedPrepare(
+            \\INSERT INTO memory_tool_metadata (key, tags_json, source)
+            \\VALUES (?1, ?2, ?3)
+            \\ON CONFLICT(key) DO UPDATE SET
+            \\   tags_json = excluded.tags_json,
+            \\   source = excluded.source
+        );
+        try bindText(stmt, 1, key);
+        try bindText(stmt, 2, tags_json);
+        try bindOptionalText(stmt, 3, source);
+        try expectDone(stmt);
+    }
+
+    pub fn getToolMetadata(
+        self: *SqliteMemory,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+    ) !MemoryToolMetadata {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        try self.initToolMetadataSchema();
+
+        const stmt = try self.cachedPrepare(
+            "SELECT tags_json, source FROM memory_tool_metadata WHERE key = ?1",
+        );
+        try bindText(stmt, 1, key);
+
+        const rc = c.sqlite3_step(stmt);
+        if (rc == c.SQLITE_DONE) {
+            return .{
+                .tags = try allocator.alloc([]u8, 0),
+                .source = null,
+            };
+        }
+        if (rc != c.SQLITE_ROW) return MemoryError.Sqlite;
+
+        const tags_json = try columnTextDup(allocator, stmt, 0);
+        defer allocator.free(tags_json);
+        const source = try columnOptionalTextDup(allocator, stmt, 1);
+        errdefer if (source) |value| allocator.free(value);
+        const tags = try decodeTagsJson(allocator, tags_json);
+        errdefer {
+            for (tags) |tag| allocator.free(tag);
+            allocator.free(tags);
+        }
+        return .{ .tags = tags, .source = source };
+    }
+
+    pub fn deleteToolMetadata(self: *SqliteMemory, key: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        try self.initToolMetadataSchema();
+
+        const stmt = try self.cachedPrepare("DELETE FROM memory_tool_metadata WHERE key = ?1");
+        try bindText(stmt, 1, key);
+        try expectDone(stmt);
+    }
+
+    pub fn setEntryTimestampForEval(
+        self: *SqliteMemory,
+        key: []const u8,
+        timestamp: []const u8,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const stmt = try self.cachedPrepare(
+            "UPDATE memories SET created_at = ?1, updated_at = ?1 WHERE key = ?2",
+        );
+        try bindText(stmt, 1, timestamp);
+        try bindText(stmt, 2, key);
+        try expectDone(stmt);
+    }
+
     fn initSchema(self: *SqliteMemory) !void {
         try self.execBatch(
             \\-- Core memories table
@@ -472,6 +610,16 @@ pub const SqliteMemory = struct {
         if (std.mem.indexOf(u8, schema_sql, "superseded_by") == null) {
             try self.execBatch("ALTER TABLE memories ADD COLUMN superseded_by TEXT;");
         }
+    }
+
+    fn initToolMetadataSchema(self: *SqliteMemory) !void {
+        try self.execBatch(
+            \\CREATE TABLE IF NOT EXISTS memory_tool_metadata (
+            \\    key       TEXT PRIMARY KEY,
+            \\    tags_json TEXT NOT NULL DEFAULT '[]',
+            \\    source    TEXT
+            \\);
+        );
     }
 
     fn recallByTimeOnly(
@@ -697,6 +845,41 @@ pub fn contentHash(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "{x:0>16}", .{first});
 }
 
+fn encodeTagsJson(allocator: std.mem.Allocator, tags: []const []const u8) ![]u8 {
+    var out = std.ArrayList(u8).init(allocator);
+    errdefer out.deinit();
+
+    try out.append('[');
+    for (tags, 0..) |tag, i| {
+        if (i != 0) try out.append(',');
+        try std.json.stringify(tag, .{}, out.writer());
+    }
+    try out.append(']');
+    return out.toOwnedSlice();
+}
+
+fn decodeTagsJson(allocator: std.mem.Allocator, tags_json: []const u8) ![][]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, tags_json, .{});
+    defer parsed.deinit();
+
+    if (parsed.value != .array) return MemoryError.InvalidInput;
+    const tags = try allocator.alloc([]u8, parsed.value.array.items.len);
+    errdefer allocator.free(tags);
+
+    var initialized: usize = 0;
+    errdefer {
+        for (tags[0..initialized]) |tag| allocator.free(tag);
+    }
+
+    for (parsed.value.array.items, 0..) |item, i| {
+        if (item != .string) return MemoryError.InvalidInput;
+        tags[i] = try allocator.dupe(u8, item.string);
+        initialized += 1;
+    }
+
+    return tags;
+}
+
 pub fn freeEntries(allocator: std.mem.Allocator, entries: []MemoryEntry) void {
     for (entries) |*entry| entry.deinit(allocator);
     allocator.free(entries);
@@ -890,4 +1073,29 @@ test "content hash matches Rust shape" {
     const hash = try contentHash(allocator, "hello");
     defer allocator.free(hash);
     try std.testing.expectEqual(@as(usize, 16), hash.len);
+}
+
+test "memory tool metadata round-trips tags and source" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "memory.db" });
+    defer std.testing.allocator.free(path);
+
+    var mem = try SqliteMemory.newAtPath(std.testing.allocator, path);
+    defer mem.deinit();
+
+    const tags = [_][]const u8{ "zig", "memory" };
+    try mem.setToolMetadata(std.testing.allocator, "hash", &tags, "fixture");
+
+    var metadata = try mem.getToolMetadata(std.testing.allocator, "hash");
+    defer metadata.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), metadata.tags.len);
+    try std.testing.expectEqualStrings("zig", metadata.tags[0]);
+    try std.testing.expectEqualStrings("memory", metadata.tags[1]);
+    try std.testing.expect(metadata.source != null);
+    try std.testing.expectEqualStrings("fixture", metadata.source.?);
 }

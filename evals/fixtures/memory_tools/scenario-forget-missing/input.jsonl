@@ -1,0 +1,1 @@
+{"op":"execute","tool":"memory_forget","setup":{"db_path":"$TMP/memory.db","entries":[]},"args":{"content_hash":"ffffffffffffffff"}}

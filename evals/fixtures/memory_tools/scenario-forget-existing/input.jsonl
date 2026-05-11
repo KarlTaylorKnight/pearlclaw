@@ -1,0 +1,1 @@
+{"op":"execute","tool":"memory_forget","setup":{"db_path":"$TMP/memory.db","entries":[{"content_hash":"aaaaaaaaaaaaaaaa","content":"Remove this memory","category":"project","created_at":"2026-05-01T00:00:00Z"}]},"args":{"content_hash":"aaaaaaaaaaaaaaaa"}}

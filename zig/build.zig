@@ -207,6 +207,19 @@ pub fn build(b: *std.Build) void {
     linkSqlite(b, eval_agent_tools_exe);
     b.installArtifact(eval_agent_tools_exe);
 
+    const eval_memory_tools_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_memory_tools.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_memory_tools_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_memory_tools_exe = b.addExecutable(.{
+        .name = "eval-memory-tools",
+        .root_module = eval_memory_tools_mod,
+    });
+    linkSqlite(b, eval_memory_tools_exe);
+    b.installArtifact(eval_memory_tools_exe);
+
     // ─── Test step ───────────────────────────────────────────────────────
     const lib_unit_tests = b.addTest(.{ .root_module = zeroclaw_mod });
     linkSqlite(b, lib_unit_tests);

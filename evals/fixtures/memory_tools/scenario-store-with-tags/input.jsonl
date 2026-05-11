@@ -1,0 +1,1 @@
+{"op":"execute","tool":"memory_store","setup":{"db_path":"$TMP/memory.db","entries":[]},"args":{"content":"Project uses SQLite memory tools","category":"project","tags":["zig","sqlite"],"source":"phase-7b","importance":0.9}}
