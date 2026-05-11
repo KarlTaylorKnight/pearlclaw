@@ -51,7 +51,6 @@ fn errorTag(err: anyerror) []const u8 {
     return switch (err) {
         factory.FactoryError.ProviderNotSupported => "provider_not_supported",
         factory.FactoryError.ApiKeyPrefixMismatch => "api_key_prefix_mismatch",
-        factory.FactoryError.MissingApiKey => "missing_api_key",
         else => "out_of_memory",
     };
 }

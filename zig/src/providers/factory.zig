@@ -18,7 +18,6 @@ const openai_client = @import("openai/client.zig");
 pub const FactoryError = error{
     ProviderNotSupported,
     ApiKeyPrefixMismatch,
-    MissingApiKey,
     OutOfMemory,
 };
 
@@ -46,6 +45,12 @@ pub const ProviderRuntimeOptions = struct {
         return .{ .extra_headers = std.StringHashMap([]u8).init(allocator) };
     }
 
+    /// Frees all owned slices, the `extra_headers` map (keys, values, and
+    /// the map's internal buffers), and any `provider_extra` JSON tree.
+    /// The `allocator` argument MUST match the allocator passed to `init` —
+    /// `extra_headers` internally retains the init-time allocator for its
+    /// bucket storage. Mixing allocators here is undefined behavior. The
+    /// simplest safe pattern is to use one allocator end-to-end.
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         if (self.auth_profile_override) |value| allocator.free(value);
         if (self.provider_api_url) |value| allocator.free(value);
@@ -202,6 +207,14 @@ fn createProviderWithUrlAndOptions(
     return FactoryError.ProviderNotSupported;
 }
 
+/// Trimmed Phase 6-B scope: all 8 Rust detection prefixes are preserved
+/// (anthropic, openrouter, openai, groq, perplexity, xai, nvidia, telnyx)
+/// so that the mismatch warning surfaces a helpful "you gave provider X a
+/// key that looks like provider Y" even when X is in scope but Y is not.
+/// The dispatch guard below only fires for "openai" because that's the
+/// only key-bearing provider currently constructible (Ollama is keyless,
+/// so no key prefix to check). Adding a future factory arm requires
+/// extending the dispatch guard, not the detection chain.
 fn checkApiKeyPrefix(provider_name: []const u8, key: []const u8) ?[]const u8 {
     const likely_provider: []const u8 = if (std.mem.startsWith(u8, key, "sk-ant-"))
         "anthropic"
@@ -477,6 +490,31 @@ fn factoryOomImpl(allocator: std.mem.Allocator) !void {
 
 test "ProviderRuntimeOptions clone and openai factory dispatch are OOM safe" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, factoryOomImpl, .{});
+}
+
+fn factoryOomImplOllama(allocator: std.mem.Allocator) !void {
+    var options = ProviderRuntimeOptions.init(allocator);
+    defer options.deinit(allocator);
+    options.reasoning_enabled = true;
+    options.zeroclaw_dir = try allocator.dupe(u8, "/tmp/zeroclaw");
+    options.provider_timeout_secs = 60;
+    try putStringValue(allocator, &options.extra_headers, "X-Source", "ollama-test");
+
+    var cloned = try options.clone(allocator);
+    defer cloned.deinit(allocator);
+
+    var handle = try createProviderWithUrlAndOptions(
+        allocator,
+        "ollama",
+        null,
+        "https://remote.example/api",
+        &cloned,
+    );
+    defer handle.deinit(allocator);
+}
+
+test "ollama factory dispatch is OOM safe" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, factoryOomImplOllama, .{});
 }
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;

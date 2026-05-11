@@ -1685,3 +1685,33 @@ Ports the trimmed provider factory family from `providers/lib.rs` into Zig. The 
 
 - `provider_runtime_options_from_config` is still intentionally deferred until the Zig config schema exposes the fields the Rust constructor reads.
 - The Zig factory does not apply `provider_timeout_secs`, `extra_headers`, `api_path`, `provider_extra`, or `merge_system_into_user` to OpenAI-compatible providers because those compatible-provider arms are outside the provider-trim scope.
+
+## 2026-05-11 — Phase 6-B.1: Phase 6-B second-pass review fixups (Claude direct)
+
+Closes the real should-fix items from the Phase 6-B (`23829bb`) second-pass review. The reviewer also flagged two "must-fix" items at confidence 82-95; both were verified to not hold up — recorded here so a future review doesn't re-investigate.
+
+### Source changes
+
+- `zig/src/providers/factory.zig:18-22` — removed `MissingApiKey` from `FactoryError`. The error tag was declared but never raised by any code path in the trimmed two-provider scope (Ollama is keyless; OpenAI doesn't enforce key-presence at factory level, matching Rust). Verified by grep: only the declaration and the eval-runner canonicalization referenced it.
+- `zig/src/tools/eval_provider_factory.zig:50-56` — removed the corresponding `MissingApiKey => "missing_api_key"` canonicalization branch. The Rust eval runner's `canonical_error_tag` only maps `"api_key_prefix_mismatch"` and `"provider_not_supported"` (plus the implicit OOM fallthrough); the Zig runner now matches that set exactly. Closes SF-1 from the review.
+- `zig/src/providers/factory.zig` (after the existing openai OOM test) — added `factoryOomImplOllama` + `test "ollama factory dispatch is OOM safe"`. The sweep populates non-trivial `ProviderRuntimeOptions` (reasoning_enabled, zeroclaw_dir, provider_timeout_secs, an extra_headers entry), clones them, then dispatches to `createProviderWithUrlAndOptions("ollama", null, url, &cloned)`. Exercises the `allocator.create(OllamaProvider)` + `OllamaProvider.newWithReasoning` allocation pair the prior sweep didn't cover. Closes SF-3.
+- `zig/src/providers/factory.zig:205-213` — added a doc comment on `checkApiKeyPrefix` explaining that all 8 Rust detection prefixes are intentionally preserved while the dispatch guard only fires for "openai" (the only key-bearing in-scope provider). Marks the trimming as intentional so a future provider addition extends the dispatch guard rather than the detection chain.
+- `zig/src/providers/factory.zig:49-54` — added a doc comment on `ProviderRuntimeOptions.deinit` making the allocator-consistency requirement explicit (the `extra_headers` StringHashMap retains the init-time allocator for its bucket storage; mixing allocators between init and deinit is UB).
+
+### Reviewer findings re-evaluated (do not re-investigate)
+
+The second-pass reviewer reported two "must-fix" items at high confidence; both were verified to not hold up:
+
+- **MF-1 (confidence 95): "checkApiKeyPrefix security bypass"** — claim was that the Zig only checks `if provider_name == "openai"` while Rust checks all 8 providers. Verified at `factory.zig:206-229`: all 8 prefix detections are present in correct longest-first order, and the dispatch guard at line 225 correctly fires when `provider_name == "openai"` and the key has a non-openai prefix. The reviewer's own analysis admitted "Ollama is keyless and the check only fires when `resolved_credential` is Some" — i.e., the current behavior is correct for the trimmed scope. For any name other than "openai" or "ollama", the factory returns `ProviderNotSupported` before the prefix check matters. **Not a must-fix.** Demoted to a doc nit (Phase 6-B.1 added the explanatory comment).
+- **MF-2 (confidence 82): "types.zig side edit untested"** — reviewer demoted this to should-fix in their own paragraph. Reading the actual `git diff 23829bb~1 23829bb -- zig/src/tool_call_parser/types.zig`: Codex applied the canonical errdefer-chain + `ensureUnusedCapacity` + `putAssumeCapacity` pattern (from prior phase reviews) to fix latent OOM leaks in `cloneJsonValue`, `singletonStringObject`, and `putOwned`. The OLD code had real leaks like `try object.put(try allocator.dupe(u8, key), .{ .string = try allocator.dupe(u8, value) })` — inner value-dupe failure leaks the key-dupe. **The change is a legitimate latent-bug fix**, not something to revert. The bundling-with-feature-commit critique is process not code.
+
+### Skipped from the review
+
+- **SF-2 — `cloneJsonValue` / `freeJsonValue` / `emptyObject` / `putOwned` duplication between `tool_call_parser/types.zig` and `api/schema.zig`** — verified via grep: the `schema.zig` versions at lines 501, 571, 591, 630 are independent of the `types.zig` versions. This duplication is **pre-existing**, not introduced by Phase 6-B. Phase 6-B's `types.zig` edit upgraded one copy to OOM-safe; the `schema.zig` copy still has the old non-OOM-safe pattern at the equivalent sites. Apply the same OOM-safety upgrade to `schema.zig` in a separate cleanup commit; not in 6-B.1 scope.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `121/121` tests passed (was 120/120; +1 Ollama OOM sweep).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 174 fixtures OK, counts unchanged.
