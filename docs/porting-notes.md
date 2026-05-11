@@ -1830,3 +1830,44 @@ This is intentional for the pilot: porting the Zig agent_tools to mirror the old
 
 - **Phase 6-B.1 SF-2** — `api/schema.zig` has duplicate `cloneJsonValue` / `freeJsonValue` / `emptyObject` / `putOwned` helpers using the old non-OOM-safe `put` patterns. This is pre-existing infrastructure, not introduced or touched by Phase 7-B, and deserves its own focused commit upgrading those helpers to the OOM-safe pattern that `tool_call_parser/types.zig` adopted in Phase 6-B.
 - **Phase 3-D.3** — `collapseWrappedMarker` Unicode whitespace gap in `multimodal.zig:243-246`. No fixture exercises it; kept deferred.
+
+## 2026-05-11 — Phase 6-B.1.2: schema.zig OOM-safety verification (Claude direct)
+
+Closes the queued Phase 6-B.1 SF-2 item. The queue entry stated `api/schema.zig`'s `cloneJsonValue` / `freeJsonValue` / `emptyObject` / `putOwned` helpers were "using the old non-OOM-safe `put` patterns" and needed upgrading to match `tool_call_parser/types.zig`. **That framing was overstated.** A direct trace shows `schema.zig` is OOM-safe today — it just uses a different errdefer-based pattern from `types.zig`'s post-Phase-6-B ensureUnusedCapacity-based pattern.
+
+### Why it's already OOM-safe
+
+`schema.zig` uses two wrapper helpers (`appendOwned`, `putOwned`, lines 565-589) that take a value by-parameter with an `errdefer freeJsonValue` covering it, then attempt the container insert with a regular `try array.append` / `try object.put`. Trace:
+
+```
+try appendOwned(allocator, &cloned, try cloneJsonValue(allocator, item));
+```
+
+evaluates as:
+1. `cloneJsonValue(...)` runs; on error, no `appendOwned` is called and the inner clone's own errdefers cleaned up.
+2. On success, the cloned value is passed by-value to `appendOwned`.
+3. Inside `appendOwned`: `var owned = value; errdefer freeJsonValue(allocator, &owned); try array.append(owned);` — if `append` fails (OOM), the errdefer fires and frees `owned`'s subtree. If it succeeds, the array now owns the value and the errdefer never fires.
+
+`putOwned` follows the same shape with two errdefers (value + key_owned) covering the regular `try object.put`. `std.StringHashMap.put` is atomic — on error, no insertion happens, and both errdefers correctly clean up.
+
+`types.zig`'s post-Phase-6-B pattern (`ensureUnusedCapacity + putAssumeCapacity`) is also OOM-safe but takes a different approach: pre-reserve capacity, then use an infallible put. Both produce equivalent safety.
+
+### Source changes
+
+- `zig/src/api/schema.zig:591` — added a doc comment on `cloneJsonValue` explaining the OOM-safety mechanism + the parallel implementation in `tool_call_parser/types.zig`. Notes the divergence in style (errdefer wrappers vs. ensureUnusedCapacity) and asks future maintainers to keep behavior in sync.
+- `zig/src/api/schema.zig` (before the existing test block) — added `cloneJsonValueOomImpl` + `test "cloneJsonValue is OOM safe on nested object + array + string mix"`. The fixture parses a non-trivial nested JSON value (object with required + properties + nested array-of-arrays + scalars + null) and sweeps `cloneJsonValue` via `checkAllAllocationFailures`. Catches future regressions in either wrapper.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `141/141` tests passed (was 140/140; +1 new OOM sweep). The new sweep walks every allocation site in `cloneJsonValue` against a non-trivial input and confirms no partial-state leak.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all 226 fixtures OK, counts unchanged. Existing schema-cleaning fixtures already exercise `cloneJsonValue` transitively, so the lack of regression is itself evidence.
+
+### Pattern unification — NOT done in this commit
+
+Both `types.zig` and `schema.zig` versions of these helpers are OOM-safe; they just use different idioms. A full unification would touch ~50-100 lines across `schema.zig`'s helper-using sites and would have no behavior change. Not in this commit's scope. Documented in the doc comment for a future cleanup phase that wants to standardize on one pattern.
+
+### Skipped from queued work (still pending)
+
+- **Phase 3-D.3** — `collapseWrappedMarker` Unicode whitespace gap in `multimodal.zig:243-246`. No fixture exercises it; kept deferred.
+- **Phase 7-B SF-3 alignment decision** — production Rust memory tools surface vs. eval-runner newer surface. Design decision, not implementation; awaits an explicit "port newer surface back to Rust" or "formalize divergence" call.

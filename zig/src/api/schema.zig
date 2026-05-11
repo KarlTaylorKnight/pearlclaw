@@ -588,6 +588,19 @@ fn putOwned(
     try object.put(key_owned, owned);
 }
 
+/// Deep-clone a `std.json.Value` with allocator-tracked ownership of every
+/// owned slice. OOM-safe: failure of any inner allocation unwinds previously
+/// allocated bytes via the `appendOwned`/`putOwned` errdefer chains plus the
+/// outer `freeJsonValue` cleanup. Verified by `test "cloneJsonValue is OOM
+/// safe on nested object + array + string mix"` near the end of this file.
+///
+/// Note: `tool_call_parser/types.zig` carries a parallel implementation of
+/// the same helper for parser-side use. The two diverged historically (Phase
+/// 6-B upgraded types.zig to an `ensureUnusedCapacity + putAssumeCapacity`
+/// pattern; the schema.zig version uses errdefer-based `appendOwned` /
+/// `putOwned` wrappers that achieve equivalent OOM safety). Keep behavior in
+/// sync if either is updated; consider consolidating in a future cleanup
+/// phase.
 pub fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) anyerror!std.json.Value {
     return switch (value) {
         .null => .null,
@@ -649,6 +662,37 @@ pub fn freeJsonValue(allocator: std.mem.Allocator, value: *std.json.Value) void 
 
 fn parseTestValue(raw: []const u8) !std.json.Parsed(std.json.Value) {
     return std.json.parseFromSlice(std.json.Value, std.testing.allocator, raw, .{});
+}
+
+fn cloneJsonValueOomImpl(allocator: std.mem.Allocator, value: std.json.Value) !void {
+    var cloned = try cloneJsonValue(allocator, value);
+    defer freeJsonValue(allocator, &cloned);
+}
+
+test "cloneJsonValue is OOM safe on nested object + array + string mix" {
+    const allocator = std.testing.allocator;
+    var parsed = try parseTestValue(
+        \\{
+        \\  "type": "object",
+        \\  "required": ["a", "b"],
+        \\  "properties": {
+        \\    "a": {"type": "string", "description": "first"},
+        \\    "b": {"type": "array", "items": {"type": "integer"}}
+        \\  },
+        \\  "tags": [["x", "y"], ["z"]],
+        \\  "count": 42,
+        \\  "ratio": 0.5,
+        \\  "active": true,
+        \\  "empty": null
+        \\}
+    );
+    defer parsed.deinit();
+
+    try std.testing.checkAllAllocationFailures(
+        allocator,
+        cloneJsonValueOomImpl,
+        .{parsed.value},
+    );
 }
 
 test "CleaningStrategy unsupported keyword sets match Rust" {
