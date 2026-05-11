@@ -56,7 +56,12 @@ pub fn singletonStringObject(
         var tmp = std.json.Value{ .object = object };
         freeJsonValue(allocator, &tmp);
     }
-    try object.put(try allocator.dupe(u8, key), .{ .string = try allocator.dupe(u8, value) });
+    const key_owned = try allocator.dupe(u8, key);
+    errdefer allocator.free(key_owned);
+    const value_owned = try allocator.dupe(u8, value);
+    errdefer allocator.free(value_owned);
+    try object.ensureUnusedCapacity(1);
+    object.putAssumeCapacity(key_owned, .{ .string = value_owned });
     return .{ .object = object };
 }
 
@@ -75,7 +80,11 @@ pub fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) Parse
                 freeJsonValue(allocator, &tmp);
             }
             for (array.items) |item| {
-                try cloned.append(try cloneJsonValue(allocator, item));
+                {
+                    var cloned_item = try cloneJsonValue(allocator, item);
+                    errdefer freeJsonValue(allocator, &cloned_item);
+                    try cloned.append(cloned_item);
+                }
             }
             break :blk .{ .array = cloned };
         },
@@ -87,10 +96,14 @@ pub fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) Parse
             }
             var it = object.iterator();
             while (it.next()) |entry| {
-                try cloned.put(
-                    try allocator.dupe(u8, entry.key_ptr.*),
-                    try cloneJsonValue(allocator, entry.value_ptr.*),
-                );
+                {
+                    const key_owned = try allocator.dupe(u8, entry.key_ptr.*);
+                    errdefer allocator.free(key_owned);
+                    var value_owned = try cloneJsonValue(allocator, entry.value_ptr.*);
+                    errdefer freeJsonValue(allocator, &value_owned);
+                    try cloned.ensureUnusedCapacity(1);
+                    cloned.putAssumeCapacity(key_owned, value_owned);
+                }
             }
             break :blk .{ .object = cloned };
         },
@@ -138,7 +151,10 @@ pub fn putOwned(
         var tmp = value;
         freeJsonValue(allocator, &tmp);
     }
-    try object.put(try allocator.dupe(u8, key), value);
+    const key_owned = try allocator.dupe(u8, key);
+    errdefer allocator.free(key_owned);
+    try object.ensureUnusedCapacity(1);
+    object.putAssumeCapacity(key_owned, value);
 }
 
 test "smoke" {

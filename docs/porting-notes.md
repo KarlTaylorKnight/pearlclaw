@@ -1641,3 +1641,47 @@ Ports the two remaining in-scope `providers/lib.rs` security helpers into Zig as
 - `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` — `783` unit tests passed; provider doctest target ran with `1` ignored doctest.
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin --subsystem provider_secrets` — `7/7` provider_secrets fixtures OK.
 - `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all `165` fixtures OK (`158` existing + `7` new provider_secrets).
+
+## 2026-05-11 — Phase 6-B: providers/lib.rs factory family port (Codex first-pass)
+
+Ports the trimmed provider factory family from `providers/lib.rs` into Zig. The Zig factory intentionally supports only the provider-trim scope (`openai` and `ollama`); every other Rust provider arm remains out of scope and returns `ProviderNotSupported`.
+
+### Source changes
+
+- `zig/src/providers/factory.zig` — new factory module with `ProviderRuntimeOptions`, `ProviderHandle`, `FactoryError`, and `createProvider*` wrappers. `ProviderHandle` owns heap-allocated `OpenAiProvider` / `OllamaProvider` instances and exposes `.provider()` for the existing vtable handle.
+- `zig/src/providers/root.zig` — re-exports the factory module, runtime options, handle type, error set, and public factory entry points.
+- `zig/src/tools/eval_provider_factory.zig` and `eval-tools/src/bin/eval-provider-factory.rs` — new provider_factory parity runners for create-provider ops.
+- `evals/fixtures/provider_factory/` — 9 new fixtures covering openai/ollama success, URL override, dropped-provider errors, and OpenAI key-prefix mismatch behavior.
+- `evals/driver/run_evals.py`, `eval-tools/Cargo.toml`, and `zig/build.zig` — register the new provider_factory subsystem and binaries.
+- `zig/src/tool_call_parser/types.zig` — tightened JSON clone/object helpers so `provider_extra` cloning is safe under allocation-failure sweeps.
+
+### Pinned answers
+
+- **ProviderHandle ownership pattern** — chose a tagged handle owning heap-allocated concrete provider pointers. This keeps the vtable `ptr` stable after the factory returns and mirrors Rust's `Box<dyn Provider>` ownership while still making the concrete variant explicit. Callers own the returned handle and must call `deinit` with the same allocator.
+- **`zeroclaw_dir` field type** — represented as `?[]u8`. It is an allocator-owned path byte slice; the struct does not canonicalize or validate path semantics.
+- **`provider_extra` field** — represented as `?std.json.Value`. Clone/deinit reuse `parser_types.cloneJsonValue` and `parser_types.freeJsonValue`; object and array members are recursively owned.
+- **`extra_headers` field** — represented as `std.StringHashMap([]u8)`. Every key and value is allocator-owned. `ProviderRuntimeOptions.clone` duplicates both sides, and `deinit` frees both sides before deinitializing the map.
+- **`ZEROCLAW_PROVIDER_URL` precedence** — the Ollama arm reads `ZEROCLAW_PROVIDER_URL` inside dispatch and lets it override the `api_url` parameter, matching Rust's env-wins behavior. This is covered by an in-process unit test instead of eval fixtures because eval fixtures should not depend on ambient env state.
+- **`resolve_provider_credential` trim** — Zig resolves explicit non-empty overrides first, then `OPENAI_API_KEY` for OpenAI, then generic `ZEROCLAW_API_KEY` and `API_KEY`. Anthropic, Groq, Qwen, MiniMax, and other dropped-provider credential paths are intentionally skipped.
+
+### OOM / ownership notes
+
+- `ProviderRuntimeOptions.clone` uses a single `errdefer out.deinit(allocator)` owner rollback so optional slices, extra headers, and `provider_extra` clean up together if a later allocation fails.
+- Header insertion uses `ensureUnusedCapacity` plus `getOrPutAssumeCapacity` and `removeByPtr` rollback for later key allocation failure.
+- Factory-created provider instances are allocated first, then initialized, with `errdefer allocator.destroy(instance)` and `errdefer instance.deinit(allocator)` guarding partial construction.
+- Added `checkAllAllocationFailures` coverage over non-trivial runtime options plus OpenAI dispatch with URL override and max tokens.
+- `parser_types.cloneJsonValue`, `singletonStringObject`, and `putOwned` now avoid key/value leaks when allocation fails between paired JSON object allocations.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `120/120` tests passed (was `113/113`; +7 provider factory / ownership / OOM tests).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-providers --release` — `783` unit tests passed; provider doctest target ran with `1` ignored doctest.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin --subsystem provider_factory` — `9/9` provider_factory fixtures OK.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all `174` fixtures OK (`165` existing + `9` new provider_factory).
+
+### Remaining risks
+
+- `provider_runtime_options_from_config` is still intentionally deferred until the Zig config schema exposes the fields the Rust constructor reads.
+- The Zig factory does not apply `provider_timeout_secs`, `extra_headers`, `api_path`, `provider_extra`, or `merge_system_into_user` to OpenAI-compatible providers because those compatible-provider arms are outside the provider-trim scope.

@@ -48,6 +48,10 @@ path = "src/bin/eval-provider-types.rs"
 name = "eval-provider-secrets"
 path = "src/bin/eval-provider-secrets.rs"
 
+[[bin]]
+name = "eval-provider-factory"
+path = "src/bin/eval-provider-factory.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
 zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }
