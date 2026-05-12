@@ -1,9 +1,8 @@
 //! ContentSearchTool port of `zeroclaw-tools/src/content_search.rs`.
 
 const std = @import("std");
-const builtin = @import("builtin");
-const posix = std.posix;
 const common = @import("fs_common.zig");
+const process_common = @import("process_common.zig");
 
 pub const Tool = common.Tool;
 pub const ToolResult = common.ToolResult;
@@ -126,9 +125,11 @@ pub const ContentSearchTool = struct {
     mock_stdout: ?[]const u8,
 
     pub fn init(allocator: std.mem.Allocator) ContentSearchTool {
+        const rg_path = process_common.findExecutableOnPath(allocator, "rg") catch null;
+        if (rg_path) |path| allocator.free(path);
         return .{
             .security = null,
-            .has_rg = detectExecutableInPath(allocator, "rg"),
+            .has_rg = rg_path != null,
             .mock_stdout = null,
         };
     }
@@ -309,7 +310,11 @@ fn dispatchWithSecurity(
         return formatSearchOutput(allocator, raw, workspace_canon, output_mode, max_results, has_rg);
     }
 
-    var process = runSearchCommand(allocator, command.argv.items) catch |err| switch (err) {
+    var process = process_common.runWithTimeout(allocator, command.argv.items, .{
+        .timeout_ns = TIMEOUT_NS,
+        .max_pipe_bytes = MAX_PIPE_BYTES,
+        .env_keys = &.{ "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE" },
+    }) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return common.failureFmt(allocator, "Failed to execute search command: {s}", .{@errorName(err)}),
     };
@@ -501,111 +506,6 @@ fn buildGrepCommand(
     try command.append("--");
     try command.append(pattern);
     try command.append(search_path);
-}
-
-const ProcessOutput = struct {
-    stdout: []u8,
-    stderr: []u8,
-    exit_code: i32,
-    timed_out: bool,
-
-    fn deinit(self: *ProcessOutput, allocator: std.mem.Allocator) void {
-        allocator.free(self.stdout);
-        allocator.free(self.stderr);
-    }
-};
-
-fn runSearchCommand(allocator: std.mem.Allocator, argv: []const []const u8) !ProcessOutput {
-    var env_map = std.process.EnvMap.init(allocator);
-    defer env_map.deinit();
-    inline for (.{ "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE" }) |key| {
-        if (std.process.getEnvVarOwned(allocator, key)) |val| {
-            defer allocator.free(val);
-            try env_map.put(key, val);
-        } else |err| switch (err) {
-            error.EnvironmentVariableNotFound => {},
-            error.OutOfMemory => return err,
-            else => {},
-        }
-    }
-
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    child.env_map = &env_map;
-    try child.spawn();
-    var child_running = true;
-    errdefer if (child_running) {
-        posix.kill(child.id, posix.SIG.KILL) catch {};
-        _ = child.wait() catch {};
-    };
-
-    const Pipe = enum { stdout, stderr };
-    var poller = std.io.poll(allocator, Pipe, .{
-        .stdout = child.stdout.?,
-        .stderr = child.stderr.?,
-    });
-    defer poller.deinit();
-
-    const deadline = std.time.nanoTimestamp() + @as(i128, @intCast(TIMEOUT_NS));
-    var timed_out = false;
-    while (true) {
-        const now = std.time.nanoTimestamp();
-        if (now >= deadline) {
-            timed_out = true;
-            break;
-        }
-        const remaining: u64 = @intCast(deadline - now);
-        const had_event = try poller.pollTimeout(remaining);
-        if (!had_event) break;
-        if (poller.fifo(.stdout).count > MAX_PIPE_BYTES) {
-            posix.kill(child.id, posix.SIG.KILL) catch {};
-            _ = child.wait() catch {};
-            child_running = false;
-            return error.StdoutStreamTooLong;
-        }
-        if (poller.fifo(.stderr).count > MAX_PIPE_BYTES) {
-            posix.kill(child.id, posix.SIG.KILL) catch {};
-            _ = child.wait() catch {};
-            child_running = false;
-            return error.StderrStreamTooLong;
-        }
-    }
-
-    const so_fifo = poller.fifo(.stdout);
-    const se_fifo = poller.fifo(.stderr);
-    if (so_fifo.head != 0) so_fifo.realign();
-    if (se_fifo.head != 0) se_fifo.realign();
-    const stdout_owned = try allocator.dupe(u8, so_fifo.buf[0..so_fifo.count]);
-    errdefer allocator.free(stdout_owned);
-    const stderr_owned = try allocator.dupe(u8, se_fifo.buf[0..se_fifo.count]);
-    errdefer allocator.free(stderr_owned);
-
-    if (timed_out) {
-        posix.kill(child.id, posix.SIG.KILL) catch {};
-        _ = child.wait() catch {};
-        child_running = false;
-        return .{
-            .stdout = stdout_owned,
-            .stderr = stderr_owned,
-            .exit_code = -1,
-            .timed_out = true,
-        };
-    }
-
-    const term = try child.wait();
-    child_running = false;
-    const exit_code: i32 = switch (term) {
-        .Exited => |code| @intCast(code),
-        else => -1,
-    };
-    return .{
-        .stdout = stdout_owned,
-        .stderr = stderr_owned,
-        .exit_code = exit_code,
-        .timed_out = false,
-    };
 }
 
 fn formatRgOutput(
@@ -811,26 +711,6 @@ fn truncateUtf8(input: []const u8, max_bytes: usize) []const u8 {
         end -= 1;
     }
     return input[0..end];
-}
-
-fn detectExecutableInPath(allocator: std.mem.Allocator, executable: []const u8) bool {
-    const path_value = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
-    defer allocator.free(path_value);
-
-    const delimiter: u8 = if (builtin.os.tag == .windows) ';' else ':';
-    var parts = std.mem.splitScalar(u8, path_value, delimiter);
-    while (parts.next()) |part| {
-        const dir = if (part.len == 0) "." else part;
-        const candidate = std.fs.path.join(allocator, &.{ dir, executable }) catch return false;
-        defer allocator.free(candidate);
-        if (std.fs.path.isAbsolute(candidate)) {
-            std.fs.accessAbsolute(candidate, .{}) catch continue;
-        } else {
-            std.fs.cwd().access(candidate, .{}) catch continue;
-        }
-        return true;
-    }
-    return false;
 }
 
 fn parseArgs(allocator: std.mem.Allocator, json: []const u8) !std.json.Parsed(std.json.Value) {

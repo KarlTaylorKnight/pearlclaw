@@ -437,3 +437,37 @@ gate enforces them in this commit; the ADR is the contract.
   resolves that pending item)
 
 **Status:** accepted
+
+---
+
+## D18 — CLI-discovery eval fixtures own Unix stub scripts and PATH overrides
+
+**Date:** 2026-05-12
+**Decision:** Eval fixtures that need deterministic CLI discovery may use
+runner-owned `setup.shell_scripts` plus `input.path_override`. Each runner
+creates parent directories, writes the script bytes, chmods them `0755`, and
+sets `PATH` for the call under test. This convention is Unix-only: shebang
+scripts are the fixture format, and Windows `.bat` handling is deferred.
+
+For `cli_discovery`, fixtures that isolate `PATH` to a synthetic bin directory
+also provide a stub `which` script. The canonical Rust source resolves tools
+by spawning `which`, so without the stub an isolated PATH cannot discover the
+stub CLIs. The Zig port deliberately uses a pure PATH walk in
+`process_common.findExecutableOnPath`, but the fixtures keep Rust and Zig
+byte-parity by making the Rust resolver deterministic too.
+
+The eval driver adds an opt-in `strip_tmp_paths` normalization flag for
+subsystems whose outputs intentionally expose absolute temp paths as result
+data. `cli_discovery` uses it so committed goldens can write `$TMP/bin/git`;
+existing `strip_tmp_ids` behavior remains unchanged for older subsystems.
+
+**Why:** Host PATH contents are not stable enough for discovery fixtures.
+Stub scripts make version output, executable presence, and multi-argument
+commands deterministic without changing production constructors or adding
+fixture-only hooks to the library code.
+
+**Tradeoff:** The convention is POSIX-only and assumes executable bits are
+honored by the filesystem. That matches the current pilot fixture scope and
+the earlier Unix symlink convention; Windows parity remains a future decision.
+
+**Status:** accepted

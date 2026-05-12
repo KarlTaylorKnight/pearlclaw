@@ -1,0 +1,1 @@
+{"op":"discover","setup":{"shell_scripts":{"$TMP/bin/which":"#!/bin/sh\nIFS=:\nfor dir in $PATH; do\nif [ -x \"$dir/$1\" ]; then\necho \"$dir/$1\"\nexit 0\nfi\ndone\nexit 1\n","$TMP/bin/git":"#!/bin/sh\necho 'git version 2.42.0'\n"}},"input":{"additional":["git"],"excluded":[],"path_override":"$TMP/bin"}}

@@ -259,6 +259,19 @@ pub fn build(b: *std.Build) void {
     linkSqlite(b, eval_data_management_exe);
     b.installArtifact(eval_data_management_exe);
 
+    const eval_cli_discovery_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_cli_discovery.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_cli_discovery_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_cli_discovery_exe = b.addExecutable(.{
+        .name = "eval-cli-discovery",
+        .root_module = eval_cli_discovery_mod,
+    });
+    linkSqlite(b, eval_cli_discovery_exe);
+    b.installArtifact(eval_cli_discovery_exe);
+
     // ─── Test step ───────────────────────────────────────────────────────
     const lib_unit_tests = b.addTest(.{ .root_module = zeroclaw_mod });
     linkSqlite(b, lib_unit_tests);

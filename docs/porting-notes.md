@@ -2014,3 +2014,102 @@ Phase 7-E ports Rust `zeroclaw-tools/src/data_management.rs` into `zig/src/agent
 
 - Zig uses whole-second `std.time.timestamp()` for retention cutoff formatting; Rust `chrono::Utc::now().to_rfc3339()` may include fractional seconds. Strategy A makes this nondeterminism invisible in parity fixtures, but production display bytes can differ in fractional precision.
 - Zig uses POSIX `fstatat` for metadata to match Rust's "directory else metadata" behavior across symlinks and non-regular files. Windows parity remains outside the current pilot target.
+
+## 2026-05-12 — Phase 7-F: cli_discovery library port + process_common extraction (Codex first-pass)
+
+Phase 7-F ports Rust `zeroclaw-tools/src/cli_discovery.rs` into Zig as the
+first non-Tool `agent_tools` library module, and extracts the Phase 7-D
+subprocess helper from `content_search.zig` into shared `process_common.zig`.
+
+### Source changes
+
+- `zig/src/agent_tools/process_common.zig` — new shared process helper with
+  `RunResult`, `RunOpts`, `runWithTimeout`, and `findExecutableOnPath`.
+- `zig/src/agent_tools/content_search.zig` — removed the private
+  `ProcessOutput`/`runSearchCommand` helper and replaced it with a
+  `process_common.runWithTimeout` call. The content_search timeout, 4 MB pipe
+  cap, and forwarded env keys (`PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`)
+  are unchanged.
+- `zig/src/agent_tools/cli_discovery.zig` — new library-only port with
+  `CliCategory`, `DiscoveredCli`, `discoverCliTools`, the 16-item
+  `KNOWN_CLIS` order, version probing, stdout/stderr version-line fallback,
+  and OOM sweeps. No Tool vtable or SecurityStub was added.
+- `zig/src/agent_tools/root.zig` — exports the `cli_discovery` namespace,
+  `CliCategory`, `DiscoveredCli`, and `discoverCliTools`.
+- `zig/src/tools/eval_cli_discovery.zig` and
+  `eval-tools/src/bin/eval-cli-discovery.rs` — new byte-parity runners that
+  process `setup.shell_scripts`, chmod scripts to `0755`, apply
+  `input.path_override`, and emit JSON arrays of discovered CLIs.
+- `zig/build.zig`, `eval-tools/Cargo.toml`, and `evals/driver/run_evals.py`
+  — register `eval-cli-discovery`; the driver adds an opt-in
+  `strip_tmp_paths` normalizer for cli_discovery absolute result paths.
+- `evals/fixtures/cli_discovery/` — adds 8 Unix stub-script fixtures:
+  known CLIs, empty PATH, exclusion, additional tool, duplicate additional,
+  stderr-only version, empty version, and kubectl multi-arg version probing.
+- `docs/decisions.md` — adds D18 for runner-owned shell scripts and PATH
+  override conventions.
+
+### Pinned decisions
+
+- **process_common API:** implemented the requested shape: `RunResult`,
+  `RunOpts`, and `runWithTimeout(allocator, argv, opts)`. No API deviation.
+  Timeout and pipe-limit interpretation remain caller-owned.
+- **findExecutableOnPath:** implemented as a pure-Zig PATH walk in
+  `process_common.zig`, checking `posix.X_OK` and returning an owned absolute
+  path. This avoids spawning `which` for Zig production code. The fixtures
+  still include a stub `which` because the canonical Rust source uses a
+  `which` subprocess.
+- **content_search extraction:** deleted `runSearchCommand` and
+  `ProcessOutput` from `content_search.zig`; the replacement call site passes
+  the existing 30s timeout, 4 MB pipe cap, and five env keys unchanged.
+- **KNOWN_CLIS order:** Zig preserves the Rust list order and appends
+  discovered additional tools afterward. Results are not sorted.
+- **CliCategory serialization:** Zig separates serialized variant names from
+  display labels. `serializeName()` returns `"VersionControl"`,
+  `"PackageManager"`, `"AiAgent"`, etc.; `displayName()` returns human labels
+  such as `"Version Control"` and `"AI Agent"`.
+- **Version probing:** Zig probes with `timeout_ns = 5 * std.time.ns_per_s`,
+  `max_pipe_bytes = 64 * 1024`, and `env_keys = &.{"PATH"}`. The first
+  trimmed stdout line wins; if stdout is empty, the first trimmed stderr line
+  wins; empty output becomes `version = null`.
+- **Eval PATH override:** Rust runner uses `std::env::set_var("PATH", ...)`.
+  Zig runner uses `setenv` around the discovery call and restores the previous
+  PATH afterward. Runner setup, not the Python driver, owns script writes and
+  chmods.
+- **D18 added:** yes. The new convention is broader than one fixture:
+  Unix-only `setup.shell_scripts`, per-runner `input.path_override`, stub
+  `which` for Rust discovery isolation, and opt-in full temp-path
+  normalization for absolute-path result data.
+
+### Phase 7-F conventions added
+
+- `cli_discovery` is a library under `agent_tools`, not a Tool. Future
+  higher-level tools should call `discoverCliTools` rather than wrapping it in
+  a vtable here.
+- CLI-discovery fixtures are Unix-only shebang scripts and must include a
+  stub `which` when PATH is isolated to the fixture bin directory.
+- JSON output objects for discovered CLIs use lexicographic key order:
+  `category`, `name`, `path`, `version`.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `172/172` tests passed. The
+  content_search extraction stayed green; the test-count growth is from
+  cli_discovery/process_common plus multimodal tests currently present in this
+  dirty worktree.
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-tools --release` —
+  `1119` tests passed, `1` doctest ignored unchanged.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin --subsystem cli_discovery` — `8/8` cli_discovery fixtures OK.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all `283` fixtures OK.
+
+### Remaining risks
+
+- Windows parity is deferred for both the stub-script fixture convention and
+  `findExecutableOnPath` executable suffix handling.
+- Production discovery depends on the real process PATH and real installed
+  CLIs; fixtures only pin deterministic synthetic PATH behavior.
+- Filesystems that ignore executable bits could cause stub scripts to be
+  missed. That matches the Rust `which`-based behavior for non-executable
+  files.

@@ -72,6 +72,10 @@ path = "src/bin/eval-content-search.rs"
 name = "eval-data-management"
 path = "src/bin/eval-data-management.rs"
 
+[[bin]]
+name = "eval-cli-discovery"
+path = "src/bin/eval-cli-discovery.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
 zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }

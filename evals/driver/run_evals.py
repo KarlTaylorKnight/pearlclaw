@@ -13,7 +13,7 @@ Usage:
   python3 evals/driver/run_evals.py \\
       --rust eval-tools/target/release \\
       --zig zig/zig-out/bin \\
-      [--subsystem parser|memory|memory_tools|file_tools|content_search|data_management|dispatcher|providers|oauth|schema|secrets|profiles|multimodal|provider_types|provider_secrets|provider_factory|agent_tools] \\
+      [--subsystem parser|memory|memory_tools|file_tools|content_search|data_management|cli_discovery|dispatcher|providers|oauth|schema|secrets|profiles|multimodal|provider_types|provider_secrets|provider_factory|agent_tools] \\
       [--update-golden]   # only with --rust; rewrites *.expected.json from Rust output
 """
 
@@ -81,6 +81,16 @@ SUBSYSTEMS = {
         "jsonl": True,
         "temp_paths": True,
         "normalize_timestamps": True,
+    },
+    "cli_discovery": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-cli-discovery",
+        "zig_bin": "eval-cli-discovery",
+        "jsonl": True,
+        "temp_paths": True,
+        "strip_tmp_ids": True,
+        "strip_tmp_paths": True,
     },
     "dispatcher": {
         "fixture_glob": "scenario-*/input.jsonl",
@@ -204,19 +214,26 @@ TMP_ID_RE = re.compile(
     r"zeroclaw-eval-[A-Za-z0-9_.:-]+-(?:rust|zig)-[A-Za-z0-9_]+"
     r"|zeroclaw-eval-[A-Za-z0-9_.:-]+-\d+-\d+"
 )
+TMP_PATH_RE = re.compile(
+    r"(?:/[^/\"'\s]+)*/"
+    r"(?:zeroclaw-eval-[A-Za-z0-9_.:-]+-(?:rust|zig)-[A-Za-z0-9_]+"
+    r"|zeroclaw-eval-[A-Za-z0-9_.:-]+-\d+-\d+)"
+)
 
 
-def normalize_tmp_ids(value):
+def normalize_tmp_ids(value, *, strip_tmp_paths: bool = False):
     if isinstance(value, dict):
-        return {k: normalize_tmp_ids(v) for k, v in value.items()}
+        return {k: normalize_tmp_ids(v, strip_tmp_paths=strip_tmp_paths) for k, v in value.items()}
     if isinstance(value, list):
-        return [normalize_tmp_ids(v) for v in value]
+        return [normalize_tmp_ids(v, strip_tmp_paths=strip_tmp_paths) for v in value]
     if isinstance(value, str):
+        if strip_tmp_paths:
+            value = TMP_PATH_RE.sub("$TMP", value)
         return TMP_ID_RE.sub("zeroclaw-eval-<TMP>", value)
     return value
 
 
-def canonicalize(blob: bytes, *, jsonl: bool = False, normalize_memory: bool = False, strip_tmp_ids: bool = False) -> str:
+def canonicalize(blob: bytes, *, jsonl: bool = False, normalize_memory: bool = False, strip_tmp_ids: bool = False, strip_tmp_paths: bool = False) -> str:
     """Parse JSON and re-emit with sorted keys / no whitespace.
 
     Rust's eval-parser already emits this form, but normalize defensively
@@ -234,14 +251,14 @@ def canonicalize(blob: bytes, *, jsonl: bool = False, normalize_memory: bool = F
             if normalize_memory:
                 obj = normalize_memory_value(obj)
             if strip_tmp_ids:
-                obj = normalize_tmp_ids(obj)
+                obj = normalize_tmp_ids(obj, strip_tmp_paths=strip_tmp_paths)
             lines.append(json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         return "\n".join(lines)
     obj = json.loads(text)
     if normalize_memory:
         obj = normalize_memory_value(obj)
     if strip_tmp_ids:
-        obj = normalize_tmp_ids(obj)
+        obj = normalize_tmp_ids(obj, strip_tmp_paths=strip_tmp_paths)
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -313,6 +330,7 @@ def run_subsystem(name: str, rust_dir: Path | None, zig_dir: Path | None,
                 jsonl=cfg.get("jsonl", False),
                 normalize_memory=(name == "memory" or cfg.get("normalize_timestamps", False)),
                 strip_tmp_ids=cfg.get("strip_tmp_ids", False),
+                strip_tmp_paths=cfg.get("strip_tmp_paths", False),
             )
 
         if zig_bin and zig_bin.exists():
@@ -330,6 +348,7 @@ def run_subsystem(name: str, rust_dir: Path | None, zig_dir: Path | None,
                 jsonl=cfg.get("jsonl", False),
                 normalize_memory=(name == "memory" or cfg.get("normalize_timestamps", False)),
                 strip_tmp_ids=cfg.get("strip_tmp_ids", False),
+                strip_tmp_paths=cfg.get("strip_tmp_paths", False),
             )
 
         if update_golden and rust_out is not None:
