@@ -215,7 +215,13 @@ fn executeErrorOomImpl(allocator: std.mem.Allocator) !void {
     try std.testing.expect(result.error_msg != null);
 }
 
-test "memory_store execute is OOM safe for success and validation errors" {
+fn parametersSchemaOomImpl(allocator: std.mem.Allocator) !void {
+    var value = try MemoryStoreTool.parametersSchema(allocator);
+    defer @import("../tool_call_parser/types.zig").freeJsonValue(allocator, &value);
+}
+
+test "memory_store execute and parametersSchema are OOM safe" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, executeHappyOomImpl, .{});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, executeErrorOomImpl, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parametersSchemaOomImpl, .{});
 }
