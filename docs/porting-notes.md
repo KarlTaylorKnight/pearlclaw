@@ -2274,3 +2274,115 @@ first Phase-7 port that drops a `#[cfg(feature="…")]` branch wholesale.
   for unknown boards. That matches the Rust behavior but means the
   eval suite cannot distinguish "configured a known board name" from
   "received a typo from the LLM" without parsing the output text.
+
+## Phase 7-I — image_info port
+
+Phase 7-I ports Rust `zeroclaw-tools/src/image_info.rs` into Zig as the
+first agent tool in the Zig port that reads binary file bytes and parses
+format-specific headers. The tool remains sync-first under the Phase 7-A
+vtable convention and emits plain text, not JSON.
+
+### Source changes per file
+
+- `zig/src/agent_tools/image_info.zig` (new) — implements
+  `ImageInfoTool` with `path` and optional `include_base64`. It matches
+  Rust's format detection order (`png`, `jpeg`, `gif`, `webp`, `bmp`,
+  `unknown`), PNG/GIF/BMP/JPEG dimension extraction offsets, the JPEG
+  SOF0..SOF3 segment walk, padded standard base64 output, and the
+  `MAX_IMAGE_BYTES = 5_242_880` metadata-before-read guard. Unit coverage
+  includes the Rust test cases plus padded-base64 parity, negative BMP
+  height via `@abs(i32)`, the malformed JPEG `seg_len < 2` guard, the
+  literal `5242880` too-large error text, and three OOM sweeps.
+- `zig/src/agent_tools/security_stub.zig` (new) — extracts the Phase 7-D
+  `SecurityStub` out of `content_search.zig` so `image_info` can reuse the
+  same policy stand-in without duplicating it.
+- `zig/src/agent_tools/content_search.zig` — now imports and re-exports
+  `SecurityStub` from the shared module; behavior unchanged.
+- `zig/src/agent_tools/root.zig` — exports `image_info`,
+  `security_stub`, and `ImageInfoTool`.
+- `zig/src/tools/eval_image_info.zig` (new) — JSONL parity runner. It owns
+  `setup.binary_files` decoding with `std.base64.standard.Decoder`, writes
+  binary bytes, maps fixture `setup.security` into `SecurityStub`, executes
+  the Zig tool, and emits canonical eval JSONL.
+- `eval-tools/src/bin/eval-image-info.rs` (new) — Rust JSONL parity
+  runner using the production `ImageInfoTool`, runner-owned
+  `setup.binary_files` decoding via
+  `base64::engine::general_purpose::STANDARD`, and `SecurityPolicy`.
+- `eval-tools/Cargo.toml` and `zig/build.zig` — register
+  `eval-image-info`.
+- `evals/driver/run_evals.py` — registers the `image_info` subsystem with
+  temp-path substitution and temp-id normalization. It deliberately does
+  not decode `binary_files`; that stays runner-owned per D19.
+- `evals/fixtures/image_info/scenario-*` — ten fixtures cover PNG basic,
+  PNG with base64, JPEG dimensions, GIF dimensions, BMP negative height,
+  WEBP format-only, unknown format, missing file, path not allowed, and
+  malformed JPEG zero-length segment.
+- `docs/decisions.md` — adds D19 for the `setup.binary_files` convention.
+
+### Pinned decisions
+
+- **SecurityStub extraction:** Option A. `SecurityStub` now lives in
+  `zig/src/agent_tools/security_stub.zig` because `content_search` and
+  `image_info` are both filesystem-adjacent tools that need the same
+  Phase 7-D shim. This follows the N=2 extraction precedent used for
+  `process_common.zig`.
+- **Binary fixture processing:** per-runner. The eval driver still only
+  substitutes `$TMP`; Rust and Zig `eval-image-info` decode and write
+  `setup.binary_files` themselves, matching D18's runner-owned setup
+  precedent for subsystem-specific fixture behavior.
+- **Base64 parity:** Zig uses `std.base64.standard.Encoder`, not
+  `standard_no_pad`. The pinned unit pair is bytes `89 50 4E 47`
+  (`"\x89PNG"`) -> `iVBORw==`, matching Rust
+  `base64::engine::general_purpose::STANDARD`.
+- **JPEG malformed segment guard:** the Zig SOF parser returns `null`
+  when `seg_len < 2`. This is unit-tested and fixture-pinned by
+  `scenario-jpeg-malformed-zero-seg`, whose output has `Format: jpeg` and
+  no `Dimensions:` line.
+- **BMP negative height:** Zig uses `@abs(h_raw)` for the signed i32 BMP
+  height. In Zig 0.14.1 this yields the unsigned same-width magnitude,
+  matching Rust `i32::unsigned_abs()`. The
+  `scenario-bmp-negative-height` fixture pins `-768` -> `Dimensions:
+  1024x768`.
+- **MAX_IMAGE_BYTES text:** the too-large path returns the literal string
+  `Image too large: {file_size} bytes (max 5242880 bytes)`. The literal
+  `5242880` is asserted in a Zig unit test; no 5+ MB fixture is committed
+  to avoid repository bloat.
+
+### Phase 7-I conventions added
+
+- `setup.binary_files` is a base64 object map for exact binary fixture
+  content. Values use padded standard base64; runners decode and write raw
+  bytes after the driver's `$TMP` substitution.
+- Binary image fixtures must not use `setup.files`, whose `content` field
+  is text and can corrupt NUL/high-bit payloads.
+- `image_info` is the first binary-file agent tool in Zig. It follows the
+  Rust order of operations: path-policy check, metadata/stat read, size
+  check, then file-byte read and header parsing.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `192/192` tests passed
+  (184 baseline + 8 new `image_info` tests, including the three OOM
+  sweeps).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean
+  with the new `eval-image-info` binary.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-tools
+  --release` — `1119` tests pass, `1` doctest ignored unchanged.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release
+  --zig zig/zig-out/bin --subsystem image_info` — `10/10` OK.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release
+  --zig zig/zig-out/bin` — all `303` fixtures OK (293 baseline + 10
+  new).
+
+### Remaining risks
+
+- WEBP only has magic-byte format detection. Width/height extraction is
+  not implemented because the Rust source does not implement VP8/VP8L/VP8X
+  dimension parsing either.
+- The Zig `SecurityStub` is still a minimal stand-in, not a full port of
+  Rust `SecurityPolicy`. The path-not-allowed fixture pins the current
+  eval behavior, but full policy parity remains deferred.
+- The too-large branch is pinned by unit test rather than a 5+ MB fixture.
+  This keeps the repository small while still exercising the metadata
+  guard and exact error string.

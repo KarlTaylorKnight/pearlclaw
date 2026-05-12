@@ -259,6 +259,19 @@ pub fn build(b: *std.Build) void {
     linkSqlite(b, eval_data_management_exe);
     b.installArtifact(eval_data_management_exe);
 
+    const eval_image_info_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_image_info.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_image_info_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_image_info_exe = b.addExecutable(.{
+        .name = "eval-image-info",
+        .root_module = eval_image_info_mod,
+    });
+    linkSqlite(b, eval_image_info_exe);
+    b.installArtifact(eval_image_info_exe);
+
     const eval_cli_discovery_mod = b.createModule(.{
         .root_source_file = b.path("src/tools/eval_cli_discovery.zig"),
         .target = target,

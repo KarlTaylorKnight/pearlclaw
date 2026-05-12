@@ -73,6 +73,10 @@ name = "eval-data-management"
 path = "src/bin/eval-data-management.rs"
 
 [[bin]]
+name = "eval-image-info"
+path = "src/bin/eval-image-info.rs"
+
+[[bin]]
 name = "eval-cli-discovery"
 path = "src/bin/eval-cli-discovery.rs"
 

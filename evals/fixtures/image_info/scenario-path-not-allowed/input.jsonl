@@ -1,0 +1,1 @@
+{"op":"execute","tool":"image_info","setup":{"workspace":"$TMP/workspace","binary_files":{"$TMP/outside/blocked.png":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAACAAHiIbwzAAAAAElFTkSuQmCC"},"security":{"extra_blocked_paths":["$TMP/outside/blocked.png"]}},"args":{"path":"$TMP/outside/blocked.png"}}

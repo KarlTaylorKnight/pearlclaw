@@ -1,0 +1,1 @@
+{"op":"execute","tool":"image_info","setup":{"workspace":"$TMP","binary_files":{"$TMP/test.png":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAACAAHiIbwzAAAAAElFTkSuQmCC"}},"args":{"path":"$TMP/test.png","include_base64":true}}

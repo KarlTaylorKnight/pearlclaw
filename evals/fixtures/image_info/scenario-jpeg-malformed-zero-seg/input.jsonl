@@ -1,0 +1,1 @@
+{"op":"execute","tool":"image_info","setup":{"workspace":"$TMP","binary_files":{"$TMP/bad.jpg":"/9j/4AAA"}},"args":{"path":"$TMP/bad.jpg"}}

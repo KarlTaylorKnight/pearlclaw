@@ -1,0 +1,1 @@
+{"op":"execute","tool":"image_info","setup":{"workspace":"$TMP","binary_files":{"$TMP/test.bin":"cmFuZG9tIGJ5dGVz"}},"args":{"path":"$TMP/test.bin"}}

@@ -13,7 +13,7 @@ Usage:
   python3 evals/driver/run_evals.py \\
       --rust eval-tools/target/release \\
       --zig zig/zig-out/bin \\
-      [--subsystem parser|memory|memory_tools|file_tools|content_search|data_management|cli_discovery|dispatcher|providers|oauth|schema|secrets|profiles|multimodal|provider_types|provider_secrets|provider_factory|agent_tools|hardware_memory_map|hardware_board_info] \\
+      [--subsystem parser|memory|memory_tools|file_tools|content_search|data_management|image_info|cli_discovery|dispatcher|providers|oauth|schema|secrets|profiles|multimodal|provider_types|provider_secrets|provider_factory|agent_tools|hardware_memory_map|hardware_board_info] \\
       [--update-golden]   # only with --rust; rewrites *.expected.json from Rust output
 """
 
@@ -81,6 +81,15 @@ SUBSYSTEMS = {
         "jsonl": True,
         "temp_paths": True,
         "normalize_timestamps": True,
+    },
+    "image_info": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-image-info",
+        "zig_bin": "eval-image-info",
+        "jsonl": True,
+        "temp_paths": True,
+        "strip_tmp_ids": True,
     },
     "cli_discovery": {
         "fixture_glob": "scenario-*/input.jsonl",

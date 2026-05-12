@@ -471,3 +471,43 @@ honored by the filesystem. That matches the current pilot fixture scope and
 the earlier Unix symlink convention; Windows parity remains a future decision.
 
 **Status:** accepted
+
+---
+
+## D19 — Binary eval fixture files are runner-owned base64 blobs
+
+**Date:** 2026-05-12
+**Decision:** Filesystem eval fixtures that need non-UTF-8 content may use
+`setup.binary_files`, an object whose keys are fixture paths and whose values
+are padded standard-base64 file bytes. The Python eval driver remains
+responsible only for `$TMP` substitution and process orchestration; each
+subsystem runner decodes and writes its own `setup.binary_files` entries.
+
+For Phase 7-I, `image_info` is the first consumer:
+
+```json
+{
+  "setup": {
+    "binary_files": {
+      "$TMP/test.png": "iVBORw0KGgo="
+    }
+  }
+}
+```
+
+Runners must create parent directories, decode with the standard padded
+base64 alphabet, and write raw bytes. Fixtures must not put image bytes in
+`setup.files`; that path is string/UTF-8 content and can corrupt arbitrary
+binary payloads.
+
+**Why:** Image header parsing needs exact byte sequences including NUL bytes
+and high-bit magic bytes. Keeping binary setup in the runners follows D18's
+recent convention for setup behavior that is subsystem-specific and avoids
+turning the Python driver into a growing fixture interpreter.
+
+**Tradeoff:** Each runner that adopts `setup.binary_files` owns a small
+decode/write implementation. That duplicates a little setup code, but keeps
+the fixture contract explicit and avoids affecting older subsystems that only
+need text files.
+
+**Status:** accepted

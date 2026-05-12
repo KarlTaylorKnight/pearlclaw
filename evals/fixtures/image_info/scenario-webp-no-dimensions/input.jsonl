@@ -1,0 +1,1 @@
+{"op":"execute","tool":"image_info","setup":{"workspace":"$TMP","binary_files":{"$TMP/test.webp":"UklGRgAAAABXRUJQeHh4eA=="}},"args":{"path":"$TMP/test.webp"}}
