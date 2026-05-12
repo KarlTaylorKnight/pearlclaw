@@ -68,6 +68,10 @@ path = "src/bin/eval-file-tools.rs"
 name = "eval-content-search"
 path = "src/bin/eval-content-search.rs"
 
+[[bin]]
+name = "eval-data-management"
+path = "src/bin/eval-data-management.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
 zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }
@@ -79,5 +83,6 @@ zeroclaw-tools = { path = "../rust/crates/zeroclaw-tools", default-features = fa
 anyhow = "1.0"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+filetime = "0.2"
 serde_json = "1.0"
 tokio = { version = "1.50", default-features = false, features = ["rt", "macros"] }

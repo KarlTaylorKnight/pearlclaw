@@ -1,0 +1,1 @@
+{"op":"execute","tool":"data_management","setup":{"workspace":"$TMP","retention_days":90,"files":[{"path":"$TMP/beta/c.txt","content":"c"},{"path":"$TMP/beta/d.txt","content":"dddd"},{"path":"$TMP/alpha/a.txt","content":"aa"},{"path":"$TMP/alpha/b.txt","content":"bbb"}]},"args":{"command":"stats"}}

@@ -246,6 +246,19 @@ pub fn build(b: *std.Build) void {
     linkSqlite(b, eval_content_search_exe);
     b.installArtifact(eval_content_search_exe);
 
+    const eval_data_management_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_data_management.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_data_management_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_data_management_exe = b.addExecutable(.{
+        .name = "eval-data-management",
+        .root_module = eval_data_management_mod,
+    });
+    linkSqlite(b, eval_data_management_exe);
+    b.installArtifact(eval_data_management_exe);
+
     // ─── Test step ───────────────────────────────────────────────────────
     const lib_unit_tests = b.addTest(.{ .root_module = zeroclaw_mod });
     linkSqlite(b, lib_unit_tests);

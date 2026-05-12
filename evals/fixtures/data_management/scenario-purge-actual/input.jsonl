@@ -1,0 +1,1 @@
+{"op":"execute","tool":"data_management","setup":{"workspace":"$TMP","retention_days":30,"files":[{"path":"$TMP/old-a.txt","content":"alpha"},{"path":"$TMP/old-b.txt","content":"bravo!"}],"file_mtimes":{"$TMP/old-a.txt":946684800,"$TMP/old-b.txt":946684800}},"args":{"command":"purge","dry_run":false}}

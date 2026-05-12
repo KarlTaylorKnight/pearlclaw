@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"{\"bytes_freed\":11,\"bytes_freed_human\":\"11 B\",\"dry_run\":true,\"files\":2}","success":true},"tool":"data_management"}

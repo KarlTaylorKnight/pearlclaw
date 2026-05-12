@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"{\"subdirectories\":{\"alpha\":{\"files\":2,\"size\":5,\"size_human\":\"5 B\"},\"beta\":{\"files\":2,\"size\":5,\"size_human\":\"5 B\"}},\"total_files\":4,\"total_size\":10,\"total_size_human\":\"10 B\"}","success":true},"tool":"data_management"}

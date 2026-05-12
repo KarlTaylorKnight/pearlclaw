@@ -1,0 +1,1 @@
+{"op":"execute","tool":"data_management","setup":{"workspace":"$TMP","retention_days":30,"files":[{"path":"$TMP/a.txt","content":"a"},{"path":"$TMP/b.txt","content":"b"},{"path":"$TMP/nested/c.txt","content":"c"}],"file_mtimes":{"$TMP/a.txt":946684800,"$TMP/b.txt":946684800,"$TMP/nested/c.txt":946684800}},"args":{"command":"retention_status"}}

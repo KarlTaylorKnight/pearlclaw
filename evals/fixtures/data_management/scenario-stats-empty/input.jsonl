@@ -1,0 +1,1 @@
+{"op":"execute","tool":"data_management","setup":{"workspace":"$TMP","retention_days":365,"files":[]},"args":{"command":"stats"}}

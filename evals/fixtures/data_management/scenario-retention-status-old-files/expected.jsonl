@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"{\"affected_files\":3,\"cutoff\":\"<TS>\",\"retention_days\":30}","success":true},"tool":"data_management"}

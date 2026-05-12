@@ -13,7 +13,7 @@ Usage:
   python3 evals/driver/run_evals.py \\
       --rust eval-tools/target/release \\
       --zig zig/zig-out/bin \\
-      [--subsystem parser|memory|memory_tools|file_tools|content_search|dispatcher|providers|oauth|schema|secrets|profiles|multimodal|provider_types|provider_secrets|provider_factory|agent_tools] \\
+      [--subsystem parser|memory|memory_tools|file_tools|content_search|data_management|dispatcher|providers|oauth|schema|secrets|profiles|multimodal|provider_types|provider_secrets|provider_factory|agent_tools] \\
       [--update-golden]   # only with --rust; rewrites *.expected.json from Rust output
 """
 
@@ -72,6 +72,15 @@ SUBSYSTEMS = {
         "jsonl": True,
         "temp_paths": True,
         "strip_tmp_ids": True,
+    },
+    "data_management": {
+        "fixture_glob": "scenario-*/input.jsonl",
+        "expected_name": "expected.jsonl",
+        "rust_bin": "eval-data-management",
+        "zig_bin": "eval-data-management",
+        "jsonl": True,
+        "temp_paths": True,
+        "normalize_timestamps": True,
     },
     "dispatcher": {
         "fixture_glob": "scenario-*/input.jsonl",
@@ -172,9 +181,21 @@ def normalize_memory_value(value, key: str | None = None):
     if isinstance(value, list):
         return [normalize_memory_value(v, key) for v in value]
     if isinstance(value, str):
+        if key == "output" and value[:1] in ("{", "["):
+            try:
+                inner = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+            else:
+                inner = normalize_memory_value(inner)
+                return json.dumps(inner, separators=(",", ":"), ensure_ascii=False)
         if key == "id" and UUID_V4_RE.match(value):
             return "<UUID>"
-        if (key == "timestamp" or (key and key.endswith("_at"))) and RFC3339_RE.match(value):
+        if (
+            key == "timestamp"
+            or key == "cutoff"
+            or (key and key.endswith("_at"))
+        ) and RFC3339_RE.match(value):
             return "<TS>"
     return value
 

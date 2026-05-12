@@ -1969,3 +1969,48 @@ Phase 7-D ports Rust `zeroclaw-tools/src/content_search.rs` into `zig/src/agent_
 - Full Rust `SecurityPolicy` parity is still deferred; the Zig SecurityStub only covers the behavior content_search calls.
 - rg/grep version skew could matter if future fixtures exercise the rg path. Current integration fixtures intentionally pin grep fallback via `has_rg=false`.
 - The 1 MB output-truncation path is unit-covered through UTF-8 truncation logic but not pinned by a large integration fixture.
+
+## 2026-05-12 — Phase 7-E: data_management port (Codex first-pass)
+
+Phase 7-E ports Rust `zeroclaw-tools/src/data_management.rs` into `zig/src/agent_tools/data_management.zig` as a sync Tool-vtable agent tool. This is the first Zig `agent_tools` port whose `ToolResult.output` is itself a compact JSON string rather than plain text or markdown.
+
+### Source changes
+
+- `zig/src/agent_tools/data_management.zig` — new sync tool port with `retention_status`, `purge`, and `stats`; recursive filesystem walk; Rust-compatible error strings; compact JSON-string output; lexicographically sorted subdirectory stats; RFC3339 and byte-format unit tests; actual-purge removal test; and three OOM sweeps (`executeHappyOomImpl`, `executeErrorOomImpl`, `parametersSchemaOomImpl`).
+- `zig/src/agent_tools/root.zig` — exports `data_management` and `DataManagementTool`.
+- `zig/build.zig` — installs the `eval-data-management` Zig parity runner.
+- `zig/src/tools/eval_data_management.zig` — new runner that creates fixture files, applies fixture-level `file_mtimes` with `File.updateTimes`, constructs `DataManagementTool(workspace, retention_days)`, and writes canonical eval JSONL.
+- `eval-tools/src/bin/eval-data-management.rs` — new Rust runner that calls the canonical `DataManagementTool`, applies fixture-level `file_mtimes` with `filetime`, and normalizes `stats.subdirectories` lexicographically before writing eval JSONL.
+- `eval-tools/Cargo.toml` / `eval-tools/Cargo.lock` — registers `eval-data-management` and adds `filetime = "0.2"` (`0.2.27` resolved in the existing lock).
+- `evals/driver/run_evals.py` — registers the `data_management` subsystem and extends timestamp normalization to `cutoff` fields inside JSON-string `output` values.
+- `evals/fixtures/data_management/` — adds 10 fixtures covering retention status old/recent files, purge dry-run/actual/mixed, stats simple/nested/empty, missing command, and invalid command.
+
+### Pinned decisions
+
+- **Time strategy:** Strategy A. Production tools use real time. The eval driver normalizes `cutoff` in JSON-string outputs to `<TS>`, avoiding fixture-only clock injection and keeping the production constructor surface aligned with Rust.
+- **JSON-output build pattern:** Zig hand-builds compact JSON with `std.ArrayList(u8).writer()` and `std.json.stringify` for string fields. Example pattern from `cmdPurge`: `writer.print("{\"bytes_freed\":...")`, `std.json.stringify(human, .{}, writer)`, then `out.toOwnedSlice()`. This pins owned `ToolResult.output` as a compact JSON string.
+- **serde_json key order:** The current Rust dependency graph uses serde_json without `preserve_order`, so `Value::to_string()` emits object keys lexicographically. Zig writes data_management output in that byte order for parity. This is a source-verified correction to the brief's human-ordered examples.
+- **Subdirectory ordering:** both runners sort immediate subdirectory entries lexicographically before serialization. This is a deliberate contract on top of the Rust source, whose filesystem walk order depends on `tokio::fs::read_dir` / OS iteration order.
+- **RFC3339 byte-parity:** Zig reuses the existing hand-rolled `api/datetime.zig` formatter and pins whole-second samples `0 -> 1970-01-01T00:00:00+00:00` and `1700000000 -> 2023-11-14T22:13:20+00:00`. Eval parity does not depend on exact real-time cutoff bytes because Strategy A normalizes `cutoff`.
+- **Fixture mtime infra:** runners, not the Python driver, process `setup.file_mtimes` after `setup.files`. Rust uses `filetime::set_file_mtime`; Zig opens the file and calls `File.updateTimes`.
+- **No ADR D18:** no clock-injection constructor convention was added, so `docs/decisions.md` remains unchanged.
+
+### Phase 7-E conventions added
+
+- data_management fixtures live under the new `evals/fixtures/data_management/scenario-*` subsystem directory and follow the Phase 7-C absolute `$TMP/...` setup-path convention.
+- Fixture-level `setup.file_mtimes` is now a runner-supported convention for filesystem evals that need deterministic modification times.
+- JSON-string agent-tool outputs must be normalized by parsing the `output` string when timestamp fields are nondeterministic; plain text outputs are left untouched.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `163/163` tests passed (was `158/158`; +5 tests/effective test blocks for data_management behavior, edge formatting, and OOM).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-tools --release` — `1119` tests passed, `1` doctest ignored unchanged.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin --subsystem data_management` — `10/10` data_management fixtures OK.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release --zig zig/zig-out/bin` — all `275` fixtures OK.
+
+### Remaining risks
+
+- Zig uses whole-second `std.time.timestamp()` for retention cutoff formatting; Rust `chrono::Utc::now().to_rfc3339()` may include fractional seconds. Strategy A makes this nondeterminism invisible in parity fixtures, but production display bytes can differ in fractional precision.
+- Zig uses POSIX `fstatat` for metadata to match Rust's "directory else metadata" behavior across symlinks and non-regular files. Windows parity remains outside the current pilot target.
