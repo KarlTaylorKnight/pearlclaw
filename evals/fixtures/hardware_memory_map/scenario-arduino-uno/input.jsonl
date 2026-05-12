@@ -1,0 +1,1 @@
+{"op":"execute","tool":"hardware_memory_map","setup":{"boards":["arduino-uno","esp32"]},"args":{"board":"arduino-uno"}}

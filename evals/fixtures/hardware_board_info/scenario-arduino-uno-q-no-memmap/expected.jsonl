@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"**Board:** arduino-uno-q\n**Chip:** STM32U585 + Qualcomm\n**Description:** Dual-core: STM32 (MCU) + Linux (aarch64). GPIO via Bridge app on port 9999.","success":true},"tool":"hardware_board_info"}

@@ -1,0 +1,1 @@
+{"op":"execute","result":{"error":"No peripherals configured. Add boards to config.toml [peripherals.boards].","output":"","success":false},"tool":"hardware_memory_map"}

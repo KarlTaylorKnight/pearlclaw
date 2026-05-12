@@ -76,6 +76,14 @@ path = "src/bin/eval-data-management.rs"
 name = "eval-cli-discovery"
 path = "src/bin/eval-cli-discovery.rs"
 
+[[bin]]
+name = "eval-hardware-memory-map"
+path = "src/bin/eval-hardware-memory-map.rs"
+
+[[bin]]
+name = "eval-hardware-board-info"
+path = "src/bin/eval-hardware-board-info.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
 zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }

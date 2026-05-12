@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"No memory map for board 'mystery-board'. Known boards: nucleo-f401re, nucleo-f411re, arduino-uno, arduino-mega, esp32","success":true},"tool":"hardware_memory_map"}

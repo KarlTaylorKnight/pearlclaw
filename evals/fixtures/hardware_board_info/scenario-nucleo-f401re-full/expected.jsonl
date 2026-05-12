@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"**Board:** nucleo-f401re\n**Chip:** STM32F401RET6\n**Description:** ARM Cortex-M4, 84 MHz. Flash: 512 KB, RAM: 128 KB. User LED on PA5 (pin 13).\n\n**Memory map:**\nFlash: 0x0800_0000 - 0x0807_FFFF (512 KB)\nRAM: 0x2000_0000 - 0x2001_FFFF (128 KB)","success":true},"tool":"hardware_board_info"}

@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"**nucleo-f401re** (from datasheet):\nFlash: 0x0800_0000 - 0x0807_FFFF (512 KB)\nRAM: 0x2000_0000 - 0x2001_FFFF (128 KB)\nSTM32F401RET6, ARM Cortex-M4","success":true},"tool":"hardware_memory_map"}

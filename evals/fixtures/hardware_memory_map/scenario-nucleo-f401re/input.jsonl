@@ -1,0 +1,1 @@
+{"op":"execute","tool":"hardware_memory_map","setup":{"boards":["nucleo-f401re"]},"args":{"board":"nucleo-f401re"}}

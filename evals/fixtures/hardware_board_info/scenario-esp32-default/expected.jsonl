@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"**Board:** esp32\n**Chip:** ESP32\n**Description:** Dual-core Xtensa LX6, 240 MHz. Flash: 4 MB typical. Built-in LED on GPIO 2.\n\n**Memory map:**\nFlash: 4 MB, IRAM/DRAM per ESP-IDF layout","success":true},"tool":"hardware_board_info"}

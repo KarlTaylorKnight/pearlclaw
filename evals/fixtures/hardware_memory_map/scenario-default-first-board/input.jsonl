@@ -1,0 +1,1 @@
+{"op":"execute","tool":"hardware_memory_map","setup":{"boards":["esp32","nucleo-f411re"]},"args":{}}

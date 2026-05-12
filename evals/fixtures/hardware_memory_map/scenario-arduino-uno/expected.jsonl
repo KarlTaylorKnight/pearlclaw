@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"**arduino-uno** (from datasheet):\nFlash: 0x0000 - 0x3FFF (16 KB, ATmega328P)\nSRAM: 0x0100 - 0x08FF (2 KB)\nEEPROM: 0x0000 - 0x03FF (1 KB)","success":true},"tool":"hardware_memory_map"}

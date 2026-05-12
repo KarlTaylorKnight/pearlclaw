@@ -1,0 +1,1 @@
+{"op":"execute","result":{"output":"**esp32** (from datasheet):\nFlash: 0x3F40_0000 - 0x3F7F_FFFF (4 MB typical)\nIRAM: 0x4000_0000 - 0x4005_FFFF\nDRAM: 0x3FFB_0000 - 0x3FFF_FFFF","success":true},"tool":"hardware_memory_map"}

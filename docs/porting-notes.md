@@ -2113,3 +2113,164 @@ subprocess helper from `content_search.zig` into shared `process_common.zig`.
 - Filesystems that ignore executable bits could cause stub scripts to be
   missed. That matches the Rust `which`-based behavior for non-executable
   files.
+
+## Phase 7-G — hardware_memory_map + hardware_board_info port (Claude-direct pair)
+
+Phase 7-G ports Rust `zeroclaw-tools/src/hardware_memory_map.rs` (208 LOC)
+and `zeroclaw-tools/src/hardware_board_info.rs` (208 LOC) into Zig as a
+pair of sync Tool-vtable agent tools. Both tools are pure static
+datasheet-lookup tables — no I/O, no allocator-owned state apart from the
+caller-provided `boards: []const []const u8` configuration. This is the
+first Phase-7 port that drops a `#[cfg(feature="…")]` branch wholesale.
+
+### Source changes per file
+
+- `zig/src/agent_tools/hardware_memory_map.zig` (new, ~260 LOC) — exposes
+  `HardwareMemoryMapTool` with `init(allocator, boards) → tool()` shape.
+  `MEMORY_MAP_NAMES` + `MEMORY_MAP_VALUES` parallel arrays mirror Rust's
+  `MEMORY_MAPS: &[(&str, &str)]` table verbatim including the multi-line
+  Flash/RAM/EEPROM bodies. Dispatch resolves the effective board as
+  `args.board → boards[0] → "unknown"`, then either prints the
+  datasheet body via `**{board}** (from datasheet):\n{map}` or, on miss,
+  the `No memory map for board '{board}'. Known boards: …` listing.
+  Empty `boards` returns a `success=false` `ToolResult` with the Rust
+  byte-equal error string. Includes 5 unit tests plus 3 OOM-sweep tests
+  (happy path, error path, parametersSchema).
+- `zig/src/agent_tools/hardware_board_info.zig` (new, ~280 LOC) — exposes
+  `HardwareBoardInfoTool` with the same shape. The `BOARD_INFO` table is
+  a six-row `BoardEntry { name, chip, desc }` array mirroring the Rust
+  `&[(&str, &str, &str)]`. `memoryMapStatic` mirrors the Rust `match`
+  block for the four boards that have a static memory-map blurb.
+  `formatKnown` composes `**Board:** …\n**Chip:** …\n**Description:** …`
+  plus an optional `\n\n**Memory map:**\n…` suffix. Includes 5 unit
+  tests plus 3 OOM-sweep tests.
+- `zig/src/agent_tools/root.zig` — adds two module imports and the two
+  `pub const …Tool` re-exports. Additive only (Codex's Phase 7-I
+  `image_info` work shares this file).
+- `zig/src/tools/eval_hardware_memory_map.zig` (new) and
+  `zig/src/tools/eval_hardware_board_info.zig` (new) — Zig eval runners
+  that read JSONL `{"op":"execute","tool":…,"setup":{"boards":[…]},"args":{…}}`
+  scenarios from stdin and emit JSONL results. No filesystem setup is
+  required — the runners just convert `setup.boards` into the
+  `[]const []const u8` constructor argument and execute.
+- `eval-tools/src/bin/eval-hardware-memory-map.rs` (new) and
+  `eval-tools/src/bin/eval-hardware-board-info.rs` (new) — Rust eval
+  runners mirroring the Zig shape via `HardwareMemoryMapTool::new(boards)`
+  and `HardwareBoardInfoTool::new(boards)`. The Rust runners are
+  unconditionally compiled without the `probe` feature, so the
+  probe-rs branch is never linked.
+- `eval-tools/Cargo.toml` — additive `[[bin]]` entries for both new
+  binaries. No new dependencies (both use `zeroclaw-tools` default
+  features, which exclude `probe`).
+- `zig/build.zig` — additive `b.addExecutable` blocks for
+  `eval-hardware-memory-map` and `eval-hardware-board-info`.
+- `evals/driver/run_evals.py` — additive `hardware_memory_map` and
+  `hardware_board_info` subsystem entries (JSONL byte-equal compare, no
+  temp paths, no timestamp normalization). The CLI help string also
+  grows two entries.
+- `evals/fixtures/hardware_memory_map/scenario-*` (5 new fixtures):
+  `scenario-nucleo-f401re` (explicit board), `scenario-arduino-uno`
+  (alternate format with three lines), `scenario-default-first-board`
+  (`args.board` omitted; first configured board wins),
+  `scenario-unknown-board` (known-boards listing), and
+  `scenario-empty-boards-config` (`success=false` config-error path).
+- `evals/fixtures/hardware_board_info/scenario-*` (5 new fixtures):
+  `scenario-nucleo-f401re-full` (info + memory-map suffix),
+  `scenario-arduino-uno-q-no-memmap` (info-only, no memory-map suffix —
+  exercises the `memoryMapStatic` miss arm),
+  `scenario-esp32-default` (default first-board, with memory map),
+  `scenario-unknown-board` (terse "configured. No static info available."),
+  and `scenario-empty-boards-config`.
+
+### Pinned decisions
+
+- **probe-rs branch dropped.** The Rust `#[cfg(feature="probe")]` blocks
+  (~85 LOC across both files) are not ported. They depend on a
+  USB-attached MCU plus the `probe-rs` crate's `Session::auto_attach`
+  call and are not exercisable from deterministic eval fixtures. The
+  Rust runners are also compiled without the `probe` feature, so eval
+  parity is well-defined: both sides take the static-table branch on
+  every input.
+- **Schema field count: 1 field each, optional.** Both `parameters_schema`
+  blocks have a single optional `board` property and no `"required"`
+  entry. The Zig `PARAMETERS_SCHEMA_JSON` literal is the Zig multi-line
+  form of the Rust `json!(…)` macro output, including the byte-equal
+  description strings. The `required` array is omitted to match Rust.
+- **Output format: byte-equal text, no JSON.** Both tools emit plain
+  text. The error path (empty `boards`) emits `success=false`,
+  `output=""`, `error="No peripherals configured. Add boards to
+  config.toml [peripherals.boards]."` — Rust string byte-for-byte. The
+  unknown-board paths emit `success=true` with a text body (this is
+  Rust's behavior; the tool does not surface "unknown board" as a
+  `ToolResult` error).
+- **Constructor ownership.** Both tools store `boards: []const []const u8`
+  as a borrowed slice. The Rust constructor takes `Vec<String>` by
+  value; in the Zig pilot the boards list is read-only config owned
+  upstream (the eval runners build the slice as a stack-or-heap
+  allocation and free after `execute` returns). This keeps the tool
+  type allocation-free at the boundary and matches the data_management
+  precedent (`workspace_dir: []const u8`).
+- **Tool vtable shape.** Both tools follow the calculator/glob_search
+  vtable pattern: `NAME` + `DESCRIPTION` + `PARAMETERS_SCHEMA_JSON`
+  string literal, `parametersSchemaImpl` parses the literal and clones
+  the resulting `std.json.Value`, `executeImpl` returns a
+  `common.FsReturn` lifted to `ToolResult` via
+  `common.resultFromReturn`. Both tools reuse `fs_common.failure`
+  helpers for the empty-boards error so the error-message ownership
+  rules match the rest of `agent_tools/`.
+- **Three OOM sweeps per tool.** `executeHappyOomImpl` (happy datasheet
+  lookup), `executeErrorOomImpl` (empty boards error), and
+  `parametersSchemaOomImpl` (schema parse+clone). Test names:
+  `"hardware_memory_map execute and parametersSchema are OOM safe"`
+  and `"hardware_board_info execute and parametersSchema are OOM
+  safe"`.
+- **Fixture conventions.** Single-line JSONL inputs, no temp paths, no
+  `setup.files` or `setup.shell_scripts` (these tools take no
+  filesystem inputs). The new `setup.boards` array is the only new
+  shape, parsed identically on both sides.
+
+### Phase 7-G conventions added
+
+- Phase-7 ports may drop entire `#[cfg(feature="…")]` branches when the
+  branch requires external hardware that cannot be fixtured.
+  Document the divergence here and ensure the corresponding Rust eval
+  runner does not enable the feature, so parity is well-defined.
+- Tools whose only configuration is a read-only list of strings (here:
+  `boards`) take `[]const []const u8` rather than owning a `Vec`
+  equivalent. The caller owns the slice and its contents.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `184/184` tests passed
+  (172 baseline + 12 new: 5 unit + 1 OOM sweep × 2 tools = 12 tests).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release` — clean
+  with two new `[[bin]]` entries.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-tools
+  --release` — `1119` tests pass, `1` doctest ignored unchanged. (No
+  Rust source files were modified.)
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release
+  --zig zig/zig-out/bin --subsystem hardware_memory_map` — `5/5` OK.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release
+  --zig zig/zig-out/bin --subsystem hardware_board_info` — `5/5` OK.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release
+  --zig zig/zig-out/bin` — all `293` fixtures OK (283 baseline + 10
+  new).
+
+### Remaining risks
+
+- The probe-rs branch is not ported. Live USB/SWD memory-map and
+  board-info reads are not exercised by any eval fixture; production
+  parity here is asserted only for the datasheet-static path. A future
+  phase that re-enables the `probe` feature would need a different
+  fixture story (USB stub, mocked probe-rs session, or a `--live`
+  manual-gate flag analogous to the OAuth `--live` decision in the
+  plan's risk register).
+- The `BOARD_INFO` and `MEMORY_MAPS` tables are hand-copied from the
+  Rust source. If the Rust tables change in a future patch, the Zig
+  tables and fixtures must be updated together; there is no
+  build-time check that the two tables agree.
+- Both tools accept any string as `board` and return a text body even
+  for unknown boards. That matches the Rust behavior but means the
+  eval suite cannot distinguish "configured a known board name" from
+  "received a typo from the LLM" without parsing the output text.

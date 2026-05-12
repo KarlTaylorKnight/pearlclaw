@@ -1,0 +1,1 @@
+{"op":"execute","tool":"hardware_board_info","setup":{"boards":["nucleo-f401re"]},"args":{"board":"mystery-board"}}
