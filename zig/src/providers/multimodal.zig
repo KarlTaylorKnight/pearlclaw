@@ -226,32 +226,101 @@ fn isLoadableImageReference(candidate: []const u8) bool {
         std.mem.startsWith(u8, candidate, "data:");
 }
 
+/// Returns the byte-length of a Unicode whitespace codepoint starting at
+/// `slice[idx]`, or null if no whitespace codepoint starts there. Matches
+/// Rust `char::is_whitespace` (Unicode property `White_Space`) so the
+/// marker-wrapping collapse behaves identically across the two ports.
+///
+/// Covered codepoints:
+/// - ASCII: U+0009..U+000D, U+0020
+/// - Latin-1: U+0085 (NEL), U+00A0 (NBSP)
+/// - U+1680 (Ogham Space Mark)
+/// - U+2000..U+200A (en/em/various spaces)
+/// - U+2028 (LSEP), U+2029 (PSEP), U+202F (Narrow NBSP)
+/// - U+205F (Medium Mathematical Space)
+/// - U+3000 (Ideographic Space)
+fn unicodeWhitespaceLen(slice: []const u8, idx: usize) ?usize {
+    if (idx >= slice.len) return null;
+    const b0 = slice[idx];
+    // Fast path: ASCII whitespace (TAB, LF, VT, FF, CR, SPACE).
+    if (b0 == ' ' or (b0 >= 0x09 and b0 <= 0x0D)) return 1;
+    if (b0 < 0x80) return null;
+
+    // Multi-byte UTF-8: decode just enough to compare against the
+    // White_Space codepoints. Anything malformed is treated as non-ws so
+    // the caller's byte loop can preserve it intact.
+    const seq_len = std.unicode.utf8ByteSequenceLength(b0) catch return null;
+    if (idx + seq_len > slice.len) return null;
+    const cp = std.unicode.utf8Decode(slice[idx .. idx + seq_len]) catch return null;
+    const is_ws = switch (cp) {
+        0x0085, // NEL
+        0x00A0, // NBSP
+        0x1680, // Ogham Space Mark
+        0x2028, // Line Separator
+        0x2029, // Paragraph Separator
+        0x202F, // Narrow No-Break Space
+        0x205F, // Medium Mathematical Space
+        0x3000, // Ideographic Space
+        => true,
+        else => cp >= 0x2000 and cp <= 0x200A,
+    };
+    return if (is_ws) seq_len else null;
+}
+
+/// Equivalent to `str::trim` in Rust: strips leading and trailing Unicode
+/// whitespace codepoints (per `unicodeWhitespaceLen`). Returns a subslice
+/// of `slice`.
+fn trimUnicodeWhitespace(slice: []const u8) []const u8 {
+    var start: usize = 0;
+    while (unicodeWhitespaceLen(slice, start)) |len| : (start += len) {}
+    var end: usize = slice.len;
+    while (end > start) {
+        // Walk backward to find the start of the last codepoint.
+        var cp_start = end - 1;
+        while (cp_start > start and (slice[cp_start] & 0xC0) == 0x80) : (cp_start -= 1) {}
+        const len = unicodeWhitespaceLen(slice, cp_start) orelse break;
+        if (cp_start + len != end) break;
+        end = cp_start;
+    }
+    return slice[start..end];
+}
+
 fn collapseWrappedMarker(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     if (std.mem.indexOfAny(u8, raw, "\n\r") == null) {
-        return try allocator.dupe(u8, std.mem.trim(u8, raw, " \t\r\n"));
+        return try allocator.dupe(u8, trimUnicodeWhitespace(raw));
     }
 
     var out = std.ArrayList(u8).init(allocator);
     errdefer out.deinit();
 
     var skip_ws = false;
-    for (raw) |byte| {
-        if (byte == '\n' or byte == '\r') {
+    var i: usize = 0;
+    while (i < raw.len) {
+        const b = raw[i];
+        if (b == '\n' or b == '\r') {
             skip_ws = true;
+            i += 1;
             continue;
         }
         if (skip_ws) {
-            if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') {
+            if (unicodeWhitespaceLen(raw, i)) |ws_len| {
+                i += ws_len;
                 continue;
             }
             skip_ws = false;
         }
-        try out.append(byte);
+        // Copy the current codepoint intact (or a single byte if the
+        // sequence is malformed) so multi-byte non-whitespace characters
+        // survive untouched.
+        const cp_len: usize = std.unicode.utf8ByteSequenceLength(b) catch 1;
+        const copy_end = @min(i + cp_len, raw.len);
+        try out.appendSlice(raw[i..copy_end]);
+        i = copy_end;
     }
 
     const raw_owned = try out.toOwnedSlice();
     errdefer allocator.free(raw_owned);
-    const trimmed = std.mem.trim(u8, raw_owned, " \t\r\n");
+    const trimmed = trimUnicodeWhitespace(raw_owned);
     if (trimmed.len == raw_owned.len) return raw_owned;
 
     const owned_trimmed = try allocator.dupe(u8, trimmed);
@@ -618,6 +687,54 @@ test "parseImageMarkers collapses wrapped marker" {
 
     try std.testing.expectEqual(@as(usize, 1), parsed.refs.len);
     try std.testing.expectEqualStrings("/home/user/signal_inbound/attachment.jpg", parsed.refs[0]);
+}
+
+test "collapseWrappedMarker absorbs Unicode whitespace after newline" {
+    // Pins parity with Rust `char::is_whitespace`: bytes that come right
+    // after a `\n`/`\r` line wrap must be skipped if they are *any* Unicode
+    // whitespace codepoint, not only ASCII space/tab. Pre-fix Zig only
+    // checked ASCII space/tab/LF/CR, so the NBSP (`\xC2\xA0`) and U+2028
+    // (`\xE2\x80\xA8`) inputs below would have leaked their multi-byte
+    // sequences into the output and broken the URL.
+    const cases = [_]struct {
+        raw: []const u8,
+        expected: []const u8,
+    }{
+        // U+00A0 NBSP after a wrap.
+        .{ .raw = "/home/user/path_i\n\u{00A0}nbound/img.jpg", .expected = "/home/user/path_inbound/img.jpg" },
+        // U+2028 Line Separator after a wrap.
+        .{ .raw = "/home/user/path_i\n\u{2028}nbound/img.jpg", .expected = "/home/user/path_inbound/img.jpg" },
+        // U+3000 Ideographic Space after a wrap.
+        .{ .raw = "/home/user/path_i\n\u{3000}nbound/img.jpg", .expected = "/home/user/path_inbound/img.jpg" },
+        // U+202F Narrow NBSP after a wrap.
+        .{ .raw = "/home/user/path_i\n\u{202F}nbound/img.jpg", .expected = "/home/user/path_inbound/img.jpg" },
+    };
+
+    for (cases) |case| {
+        const got = try collapseWrappedMarker(std.testing.allocator, case.raw);
+        defer std.testing.allocator.free(got);
+        try std.testing.expectEqualStrings(case.expected, got);
+    }
+}
+
+test "collapseWrappedMarker trims Unicode whitespace edges" {
+    // Rust `.trim()` strips the full `White_Space` set; the old Zig
+    // implementation only trimmed ASCII space/tab/LF/CR. NBSP at the
+    // boundaries used to survive and yield an invalid path.
+    const got = try collapseWrappedMarker(std.testing.allocator, "\u{00A0}/tmp/a.png\u{00A0}");
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("/tmp/a.png", got);
+}
+
+test "collapseWrappedMarker preserves non-whitespace UTF-8" {
+    // Multi-byte non-whitespace characters must still survive intact when
+    // they appear after a wrap. The greek letter alpha (U+03B1 -> `\xCE\xB1`)
+    // has a leading byte (0xCE) that the old byte-by-byte loop would have
+    // copied; the continuation byte (0xB1) would also have been copied —
+    // the new codepoint-aware loop must still produce the same bytes.
+    const got = try collapseWrappedMarker(std.testing.allocator, "alpha=\n  \u{03B1}.png");
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("alpha=\u{03B1}.png", got);
 }
 
 test "extractOllamaImagePayload supports data URI and passthrough" {
