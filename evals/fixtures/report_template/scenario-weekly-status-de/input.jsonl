@@ -1,0 +1,1 @@
+{"op":"execute","tool":"report_template","args":{"template":"weekly_status","language":"de","variables":{"project_name":"ZeroClaw","period":"2026-W10","completed":"- Aufgabe A","in_progress":"- Aufgabe B","blocked":"keine","next_steps":"- Aufgabe C"}}}

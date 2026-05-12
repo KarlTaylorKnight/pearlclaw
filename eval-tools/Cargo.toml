@@ -88,6 +88,10 @@ path = "src/bin/eval-hardware-memory-map.rs"
 name = "eval-hardware-board-info"
 path = "src/bin/eval-hardware-board-info.rs"
 
+[[bin]]
+name = "eval-report-template"
+path = "src/bin/eval-report-template.rs"
+
 [dependencies]
 zeroclaw-api = { path = "../rust/crates/zeroclaw-api" }
 zeroclaw-config = { path = "../rust/crates/zeroclaw-config" }

@@ -311,6 +311,19 @@ pub fn build(b: *std.Build) void {
     linkSqlite(b, eval_hardware_board_info_exe);
     b.installArtifact(eval_hardware_board_info_exe);
 
+    const eval_report_template_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/eval_report_template.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    eval_report_template_mod.addImport("zeroclaw", zeroclaw_mod);
+    const eval_report_template_exe = b.addExecutable(.{
+        .name = "eval-report-template",
+        .root_module = eval_report_template_mod,
+    });
+    linkSqlite(b, eval_report_template_exe);
+    b.installArtifact(eval_report_template_exe);
+
     // ─── Test step ───────────────────────────────────────────────────────
     const lib_unit_tests = b.addTest(.{ .root_module = zeroclaw_mod });
     linkSqlite(b, lib_unit_tests);

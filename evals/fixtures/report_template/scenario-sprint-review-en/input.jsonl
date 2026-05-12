@@ -1,0 +1,1 @@
+{"op":"execute","tool":"report_template","args":{"template":"sprint_review","language":"en","variables":{"sprint_dates":"2026-W10 to 2026-W11","completed":"3 stories","in_progress":"2 stories","blocked":"1 story","velocity":"42"}}}

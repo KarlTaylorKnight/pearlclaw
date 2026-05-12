@@ -15,6 +15,8 @@ pub const security_stub = @import("security_stub.zig");
 pub const cli_discovery = @import("cli_discovery.zig");
 pub const hardware_memory_map = @import("hardware_memory_map.zig");
 pub const hardware_board_info = @import("hardware_board_info.zig");
+pub const report_templates = @import("report_templates.zig");
+pub const report_template_tool = @import("report_template_tool.zig");
 
 pub const Tool = tool.Tool;
 pub const ToolResult = tool.ToolResult;
@@ -36,6 +38,7 @@ pub const DiscoveredCli = cli_discovery.DiscoveredCli;
 pub const discoverCliTools = cli_discovery.discoverCliTools;
 pub const HardwareMemoryMapTool = hardware_memory_map.HardwareMemoryMapTool;
 pub const HardwareBoardInfoTool = hardware_board_info.HardwareBoardInfoTool;
+pub const ReportTemplateTool = report_template_tool.ReportTemplateTool;
 
 test {
     @import("std").testing.refAllDecls(@This());

@@ -1,0 +1,1 @@
+{"op":"execute","tool":"report_template","args":{"template":"risk_register","language":"en","variables":{"project_name":"Acme & Co. <pilot>","risks":"- supply chain delay\n- key person risk","mitigations":"- weekly review\n- pairing"}}}

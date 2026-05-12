@@ -1,0 +1,1 @@
+{"op":"execute","tool":"report_template","args":{"template":"milestone_report","language":"en","variables":{"project_name":"ZeroClaw","milestones":"M1: pilot\nM2: GA","status":"on track"}}}

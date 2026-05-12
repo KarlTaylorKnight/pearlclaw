@@ -2386,3 +2386,159 @@ vtable convention and emits plain text, not JSON.
 - The too-large branch is pinned by unit test rather than a 5+ MB fixture.
   This keeps the repository small while still exercising the metadata
   guard and exact error string.
+
+## Phase 7-H — report_template_tool + report_templates port (Claude direct)
+
+Ported `rust/crates/zeroclaw-tools/src/report_template_tool.rs` (~204 LOC)
+and `rust/crates/zeroclaw-tools/src/report_templates.rs` (~602 LOC) as a
+Claude-direct pair. Pure-compute string templating: no FS, no net, no
+async, no subprocess. The engine builds a Markdown document by
+substituting `{{key}}` placeholders into language-specific section
+tables, exposed through a single `report_template` tool that dispatches
+on the `(template, language)` enum pair.
+
+### Source changes
+
+- `zig/src/agent_tools/report_templates.zig` (new, ~430 LOC) — port of
+  the template engine. Defines `ReportFormat` (`markdown` / `html`),
+  `TemplateSection`, `ReportTemplate`, single-pass `{{key}}` substitution,
+  `escapeHtml`, the four built-in template constructors
+  (`weeklyStatusTemplate`, `sprintReviewTemplate`, `riskRegisterTemplate`,
+  `milestoneReportTemplate`), and the high-level `renderTemplate`. The
+  16 language-keyed section tables are module-level static arrays.
+- `zig/src/agent_tools/report_template_tool.zig` (new, ~430 LOC) — the
+  `Tool` vtable wrapper. Schema field count and enum values are
+  byte-copied from Rust `parameters_schema`. Coerces JSON variable values
+  to strings exactly as Rust's `serde_json::Value::to_string` does
+  (number / bool inline; null / array / object → empty string). Three
+  OOM sweeps: `executeHappyOomImpl`, `executeErrorOomImpl`,
+  `parametersSchemaOomImpl`.
+- `zig/src/agent_tools/root.zig` — additive imports + re-exports for
+  `report_templates`, `report_template_tool`, and `ReportTemplateTool`.
+- `zig/src/tools/eval_report_template.zig` (new, ~80 LOC) — JSONL parity
+  runner. No filesystem or binary setup is needed.
+- `eval-tools/src/bin/eval-report-template.rs` (new, ~80 LOC) — Rust
+  JSONL parity runner using the production `ReportTemplateTool`.
+  Converts any `anyhow::Error` from `execute()` into a
+  `ToolResult { success: false, error: Some(msg) }` so that Rust and Zig
+  emit identical byte sequences for the missing-template,
+  missing-variables, and unsupported-template error paths.
+- `eval-tools/Cargo.toml` — additive `[[bin]]` entry for
+  `eval-report-template`.
+- `zig/build.zig` — additive `addExecutable` block for
+  `eval-report-template`.
+- `evals/driver/run_evals.py` — additive `report_template` subsystem
+  entry (`jsonl: True`, no temp paths, no normalization).
+- `evals/fixtures/report_template/scenario-*` — 11 fixtures (see below).
+
+### Pinned decisions
+
+- **Schema field count:** 3 fields: `template` enum (4 values), `language`
+  enum (4 values, default `en`), `variables` object. `required` is
+  `["template", "variables"]` — `language` is optional. Byte-copied from
+  Rust.
+- **Template enum values:** `weekly_status`, `sprint_review`,
+  `risk_register`, `milestone_report`. Byte-copied.
+- **Language enum values:** `en`, `de`, `fr`, `it`. Byte-copied.
+- **Output format:** Markdown only. The Rust `ReportFormat::Html` branch
+  is never reachable from `render_template` (every built-in template
+  hardcodes `format: ReportFormat::Markdown`), but the Zig port preserves
+  the Html branch on `ReportTemplate.format` for completeness and to keep
+  the struct shape byte-equal with the Rust enum. Unit-tested via
+  `html format renders <h2>/<p> wrappers around escaped content`.
+- **HTML escape:** Rust escapes `&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;`,
+  `"` → `&quot;`, `'` → `&#x27;`. Zig `escapeHtml` matches byte-for-byte.
+  Only used on the Html branch — Markdown bodies are emitted unescaped.
+- **`{{key}}` substitution:** single-pass byte-walking scanner. At each
+  byte, look for `{{`; if found, locate the next `}}`; on hit, look up
+  the key in `vars` and append the value (no re-expansion); on miss,
+  emit the literal `{{...}}` verbatim. Unterminated `{{` prefix is
+  emitted verbatim. Mirrors the Rust scanner exactly for ASCII templates
+  (which all the built-in tables are).
+- **Section tables:** module-level static arrays, one per
+  `(template, language)` pair (16 total). The dispatch functions
+  (`weeklyStatusTemplate` etc.) return a `ReportTemplate` that points
+  into the static table. Unknown languages silently fall back to
+  English to match Rust's `match lang { ... _ => en }` arm.
+- **Variable value coercion:** mirrors Rust's `serde_json::Value` match
+  in `execute`:
+    - String → `s.clone()` (Zig `allocator.dupe`).
+    - Number (Integer / Float / NumberString) → JSON literal form via
+      `std::fmt::allocPrint("{d}", ...)` for floats and integers, raw
+      pass-through for `number_string`. Matches `n.to_string()` for the
+      happy-path numbers exercised by eval fixtures.
+    - Bool → `"true"` / `"false"`.
+    - Null / Array / Object → empty string.
+- **Error messages:** byte-copied from Rust:
+    - Missing `template` field (or non-string): `missing template`.
+    - Missing `variables` field (or non-object): `variables must be object`.
+    - Unknown template name: `unsupported template: {name}` (anyhow bail
+      from `render_template`).
+- **Error surface:** Rust's tool `execute()` returns `Err(anyhow!...)`
+  for the three error paths. The Zig tool returns a
+  `ToolResult { success: false, error_msg: ... }` directly because the
+  Zig `Tool` vtable does not have a separate error channel. The Rust
+  eval runner converts `anyhow::Error` into the same `ToolResult` shape
+  so the canonical eval JSON matches byte-for-byte across languages.
+- **Determinism:** the section tables and substitution algorithm are
+  fully deterministic. No timestamps, no randomness, no IO.
+
+### Verification
+
+- `cd zig && zig build` — clean.
+- `cd zig && zig build test --summary all` — `216/216` tests passed
+  (192 baseline + 24 new: 13 in `report_templates.zig`, 11 in
+  `report_template_tool.zig` including the three OOM sweeps).
+- `cargo build --manifest-path eval-tools/Cargo.toml --release
+  --bin eval-report-template` — clean.
+- `cargo test --manifest-path rust/Cargo.toml -p zeroclaw-tools
+  --release` — `1119` tests pass, `1` doctest ignored, unchanged.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release
+  --zig zig/zig-out/bin --subsystem report_template` — `11/11` OK.
+- `python3 evals/driver/run_evals.py --rust eval-tools/target/release
+  --zig zig/zig-out/bin` — all `314` fixtures OK (303 baseline + 11
+  new).
+
+### Fixtures
+
+Eleven scenarios under `evals/fixtures/report_template/`:
+
+- `scenario-weekly-status-en`, `scenario-sprint-review-en`,
+  `scenario-risk-register-en`, `scenario-milestone-report-en` — each
+  template happy path in English.
+- `scenario-weekly-status-de`, `scenario-weekly-status-fr`,
+  `scenario-weekly-status-it` — non-English language coverage for the
+  weekly_status template (sprint_review / risk_register /
+  milestone_report cross-language coverage is exercised in unit tests
+  rather than fixtures to keep the fixture set compact).
+- `scenario-missing-template` — `args` lacks `template` → error
+  `missing template`.
+- `scenario-missing-variables` — `args` lacks `variables` → error
+  `variables must be object`.
+- `scenario-unknown-template` — `template: "mystery"` → error
+  `unsupported template: mystery`.
+- `scenario-coerce-non-string-vars` — JSON number and bool in the
+  `variables` map; pins coercion to `"3"` and `"true"` in the output.
+
+The HTML-escape edge case (variable values containing `<script>` or `&`)
+is unit-tested rather than fixture-pinned because the production tool
+emits Markdown, where variable values are NOT escaped. The Html escape
+path is exercised by the unit test `html format renders <h2>/<p>
+wrappers around escaped content`.
+
+### Remaining risks
+
+- The Rust `ReportFormat::Html` branch is preserved in Zig but never
+  reachable from the tool wrapper. Anyone wiring up an Html-emitting
+  template in the future will get parity for free.
+- The `coerceToString` `float` branch uses Zig `{d}` which gives the
+  shortest round-trip form. For exotic float inputs (subnormals, very
+  large magnitudes), this could in theory diverge from
+  `serde_json::Number::to_string`. All eval fixtures and unit tests use
+  small integer values so this branch is exercised but not stress-tested.
+  Variable values supplied by agents are typically strings; the
+  number-coercion path is a secondary code path for ergonomic JSON.
+- Unknown languages silently fall back to English (matching Rust). There
+  is no fixture for this specific behavior; it is covered by the unit
+  test `renderTemplate accepts unknown language and falls back to
+  English`.
